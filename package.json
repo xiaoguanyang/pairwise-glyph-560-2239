@@ -107,7 +107,7 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.13",
+    "@biomejs/biome": "^2.5.14",
     "@codecov/vite-plugin": "^2.0.1",
     "@playwright/test": "^1.63.0",
     "@sentry/vite-plugin": "^5.4.0",

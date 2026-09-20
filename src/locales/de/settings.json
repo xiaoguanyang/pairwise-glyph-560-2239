@@ -1,0 +1,379 @@
+{
+  "modal": {
+    "title": "Einstellungen",
+    "reset": "Auf Standardwerte zurücksetzen",
+    "changesApply": "Änderungen werden sofort übernommen",
+    "tabs": {
+      "appearance": "Darstellung",
+      "layout": "Layout",
+      "behavior": "Verhalten",
+      "editor": "Editor",
+      "hotkeys": "Tastenkürzel",
+      "ai": "KI",
+      "print": "Drucken",
+      "privacy": "Datenschutz",
+      "markdown": "Markdown",
+      "plugins": "Plugins"
+    },
+    "close": "Schließen"
+  },
+  "language": {
+    "sectionTitle": "Sprache",
+    "label": "Anzeigesprache",
+    "system": "System"
+  },
+  "appearance": {
+    "theme": {
+      "title": "Theme",
+      "label": "Farb-Theme",
+      "system": "System",
+      "light": "Hell",
+      "dark": "Dunkel"
+    },
+    "typography": {
+      "title": "Typografie"
+    },
+    "fontFamily": {
+      "label": "Dokumentschrift",
+      "system": "Standard",
+      "serif": "Serif",
+      "sans": "Sans-Serif",
+      "mono": "Monospace",
+      "custom": "Benutzerdefiniert"
+    },
+    "customFont": {
+      "label": "Benutzerdefinierter Schriftname",
+      "placeholder": "z. B. Inter, Lora"
+    },
+    "fontSize": {
+      "label": "Schriftgröße"
+    },
+    "lineHeight": {
+      "label": "Zeilenhöhe",
+      "compact": "Kompakt",
+      "normal": "Normal",
+      "relaxed": "Locker"
+    },
+    "contentWidth": {
+      "label": "Inhaltsbreite",
+      "narrow": "Schmal",
+      "medium": "Mittel",
+      "wide": "Breit",
+      "full": "Maximal"
+    },
+    "code": {
+      "title": "Code"
+    },
+    "codeFont": {
+      "label": "Code-Schrift",
+      "placeholder": "Standard (SF Mono, Fira Code…)"
+    },
+    "codeTheme": {
+      "label": "Code-Theme",
+      "glyph": "Glyph (Standard)",
+      "github": "GitHub",
+      "monokai": "Monokai",
+      "nord": "Nord",
+      "solarizedLight": "Solarized Light",
+      "solarizedDark": "Solarized Dark"
+    }
+  },
+  "layout": {
+    "title": "Seitenleisten",
+    "showFiles": {
+      "label": "Dateien-Seitenleiste anzeigen",
+      "description": "Dateibaum des Arbeitsbereichs (nur Ordner-Tabs). Umschalten mit <kbd>Cmd/Ctrl+B</kbd>."
+    },
+    "showOutline": {
+      "label": "Gliederungs-Seitenleiste anzeigen",
+      "description": "Inhaltsverzeichnis des Dokuments. Umschalten mit <kbd>Cmd/Ctrl+\\</kbd>."
+    },
+    "sidebarLayout": {
+      "label": "Seitenleisten-Layout",
+      "description": "Nur Ordner-Tabs. <b>Geteilt</b>: Dateien und Gliederung auf gegenüberliegenden Seiten. <b>Kombiniert</b>: in einem Panel gestapelt. <b>Nebeneinander</b>: zwei benachbarte Panels auf derselben Seite.",
+      "split": "Geteilt",
+      "combined": "Kombiniert",
+      "beside": "Nebeneinander"
+    },
+    "swap": {
+      "label": "Seiten der Seitenleisten tauschen",
+      "description": "Vertauscht, auf welcher Seite jedes Panel liegt. Standard ist Dateien links / Gliederung rechts; aktiviert wird es zu Dateien rechts / Gliederung links."
+    },
+    "filesWidth": {
+      "label": "Breite der Dateien-Seitenleiste"
+    },
+    "outlineWidth": {
+      "label": "Breite der Gliederungs-Seitenleiste"
+    }
+  },
+  "behavior": {
+    "fileHandling": {
+      "title": "Dateiverwaltung"
+    },
+    "autoReload": {
+      "label": "Automatisch neu laden",
+      "description": "Datei neu laden, wenn sie auf dem Datenträger geändert wurde"
+    },
+    "autoSave": {
+      "label": "Automatisch speichern",
+      "description": "Änderungen automatisch auf der Festplatte speichern"
+    },
+    "reopenLastFile": {
+      "label": "Letzte Datei erneut öffnen",
+      "description": "Beim Start die zuletzt angesehene Datei öffnen"
+    },
+    "confirmExternalLinks": {
+      "label": "Externe Links bestätigen",
+      "description": "Vor dem Öffnen von Links im Browser nachfragen"
+    },
+    "recentFiles": {
+      "title": "Zuletzt verwendete Dateien",
+      "clear": "Zuletzt verwendete Dateien löschen"
+    }
+  },
+  "updates": {
+    "title": "Updates",
+    "check": {
+      "label": "Nach Updates suchen",
+      "description": "Beim Start nach einer neueren Version suchen und ein Banner anzeigen, wenn eine verfügbar ist. Es wird nur die installierte Version verglichen; es werden keine Dateien oder persönlichen Daten gesendet."
+    },
+    "checking": "Wird geprüft…",
+    "checkNow": "Jetzt prüfen",
+    "current": "Du verwendest die neueste Version.",
+    "error": "Suche nach Updates fehlgeschlagen. Versuche es später erneut.",
+    "available": "Version {{version}} ist verfügbar.",
+    "download": "Herunterladen"
+  },
+  "editor": {
+    "title": "Editor",
+    "keymap": {
+      "label": "Tastenbelegung",
+      "description": "Tastenbelegung für den Markdown-Editor. Vim ergänzt die modale Bearbeitung; VSCode bildet gängige VSCode-Tastenkürzel nach. Wird beim nächsten Wechsel eines Dokuments in den Bearbeitungs- oder geteilten Modus wirksam."
+    },
+    "keymapOptions": {
+      "default": "Standard",
+      "vim": "Vim",
+      "vscode": "VSCode"
+    },
+    "pasteHtml": {
+      "label": "HTML als Markdown einfügen",
+      "description": "Formatierten Text aus einem Browser oder einer anderen App beim Einfügen in Markdown umwandeln. Ausschalten, um stattdessen den reinen Text einzufügen."
+    },
+    "syncScroll": {
+      "label": "Bildlauf im geteilten Modus synchronisieren",
+      "description": "Im geteilten Modus bewegt der Bildlauf in einem Bereich den anderen an die passende Stelle. Ausschalten, um beide Bereiche unabhängig zu scrollen."
+    },
+    "help": {
+      "default": {
+        "title": "Standard-Tastenkürzel (Glyph)",
+        "autocomplete": "öffnet in einem Ordner-Arbeitsbereich die Wikilink-Autovervollständigung",
+        "accept": "die hervorgehobene Vervollständigung übernehmen",
+        "undoRedo": "rückgängig / wiederherstellen",
+        "standard": "ansonsten Standard-Tastenkürzel des Betriebssystems zum Bearbeiten von Text"
+      },
+      "vim": {
+        "title": "Vim-Kurzreferenz",
+        "modes": "Modi: normal, insert, insert-after, visual",
+        "motions": "Bewegungen; f + Zeichen zum Springen; / zum Suchen",
+        "operators": "Operatoren mit Anzahlen und Textobjekten (diw, ci\")",
+        "files": "Dateibefehle wie :w, :q und :wq gelten hier nicht. Glyph speichert automatisch, und ein Tab wird mit dem Tastenkürzel zum Schließen des Tabs geschlossen."
+      },
+      "vscode": {
+        "title": "VSCode-Tastenkürzel",
+        "moveLine": "die aktuelle Zeile nach oben / unten verschieben",
+        "copyLine": "die Zeile nach oben / unten kopieren",
+        "comment": "Zeilenkommentar umschalten",
+        "multiSelect": "das nächste Vorkommen auswählen; Cmd/Ctrl+] oder [ zum Ein- / Ausrücken"
+      }
+    },
+    "spellCheck": {
+      "title": "Rechtschreibprüfung",
+      "label": "Rechtschreibung prüfen",
+      "description": "Falsch geschriebene Wörter werden beim Bearbeiten unterstrichen. Rechtsklick auf ein Wort zeigt Vorschläge. Gilt für den Bearbeitungs- und den geteilten Modus.",
+      "languagesLabel": "Sprachen",
+      "languagesDescription": "Wörter werden gegen jede aktivierte Sprache geprüft. Text in Schriften ohne aktiviertes Wörterbuch wird nicht markiert.",
+      "languages": {
+        "en": "Englisch (US)"
+      },
+      "ignore": "Ignorieren",
+      "add": "Zum Wörterbuch hinzufügen",
+      "noSuggestions": "Keine Vorschläge"
+    },
+    "format": {
+      "bold": "Fett",
+      "italic": "Kursiv",
+      "code": "Inline-Code",
+      "strikethrough": "Durchgestrichen",
+      "cut": "Ausschneiden",
+      "copy": "Kopieren",
+      "paste": "Einfügen",
+      "selectAll": "Alles auswählen"
+    },
+    "search": {
+      "find": "Suchen",
+      "replace": "Ersetzen",
+      "next": "Weiter",
+      "previous": "Zurück",
+      "all": "Alle",
+      "matchCase": "Groß-/Kleinschreibung",
+      "regexp": "Regex",
+      "byWord": "Ganzes Wort",
+      "replaceOne": "Ersetzen",
+      "replaceAll": "Alle ersetzen",
+      "close": "Schließen",
+      "currentMatch": "Aktueller Treffer",
+      "onLine": "in Zeile",
+      "replacedOnLine": "Treffer in Zeile $ ersetzt",
+      "replacedMatches": "$ Treffer ersetzt"
+    }
+  },
+  "ai": {
+    "provider": {
+      "title": "KI-Anbieter",
+      "label": "Anbieter",
+      "none": "Keiner",
+      "claude": "Claude (Anthropic)",
+      "openai": "OpenAI",
+      "ollama": "Ollama (Lokal)"
+    },
+    "apiKey": {
+      "label": "API-Schlüssel",
+      "description": "Wird im Schlüsselbund deines Systems gespeichert, nie in Einstellungsdateien.",
+      "keychainError": "Der Schlüssel konnte nicht im System-Schlüsselbund gespeichert werden. Er bleibt für diese Sitzung verfügbar; prüfe, ob dein Schlüsselbund entsperrt ist, und versuche es erneut."
+    },
+    "ollamaUrl": {
+      "label": "Ollama-URL",
+      "description": "Erfordert OLLAMA_ORIGINS=* für CORS"
+    },
+    "model": {
+      "label": "Modell",
+      "placeholder": "Modellnamen auswählen oder eingeben",
+      "status": {
+        "checking": "Ollama-Server wird geprüft…",
+        "ok": "Mit Ollama verbunden. Installierte Modelle: {{count}}",
+        "error": "Ollama-Server nicht erreichbar. Prüfe die URL und OLLAMA_ORIGINS."
+      }
+    },
+    "tts": {
+      "title": "Sprachausgabe"
+    },
+    "voice": {
+      "label": "Stimme",
+      "placeholder": "Standard-Systemstimme"
+    },
+    "speed": {
+      "label": "Geschwindigkeit"
+    }
+  },
+  "print": {
+    "title": "Drucken & PDF-Export",
+    "pageBreaks": {
+      "label": "Seitenumbrüche",
+      "description": "Bei einer Überschriftsebene eine neue Seite beginnen",
+      "none": "Keine",
+      "h1": "Bei H1",
+      "h2": "Bei H2"
+    },
+    "toc": {
+      "label": "Inhaltsverzeichnis einfügen",
+      "description": "Am Anfang eine Inhaltsseite einfügen"
+    },
+    "epubMedia": {
+      "label": "Medien in EPUB einbetten",
+      "description": "Audio und Video unter dieser Größe ins Buch packen; größere Dateien werden nur benannt",
+      "off": "Aus",
+      "mb": "{{limit}} MB"
+    },
+    "backgrounds": {
+      "label": "Hintergründe & Farben drucken",
+      "description": "Theme-Farben in der Ausgabe beibehalten"
+    }
+  },
+  "privacy": {
+    "title": "Fehlerberichte",
+    "crashReports": {
+      "label": "Absturzberichte senden",
+      "description": "Standardmäßig aus. Wenn aktiviert, werden anonyme Absturzberichte (Stack-Traces, Betriebssystem und App-Version) gesendet, um Fehler zu beheben. Deine Dateien, Dateipfade und Links werden niemals einbezogen. Nur in Produktionsversionen aktiv. Die vollständige Richtlinie findest du in SECURITY.md."
+    }
+  },
+  "secrets": {
+    "title": "Gespeicherte Geheimnisse",
+    "description": "Was Glyph in deinem Systemschlüsselbund gespeichert hat. Werte werden hier nie angezeigt, nur ob ein Eintrag belegt ist.",
+    "slots": {
+      "claude": "Claude-API-Schlüssel",
+      "openai": "OpenAI-API-Schlüssel"
+    },
+    "status": {
+      "saved": "Gespeichert",
+      "notSet": "Nicht gesetzt",
+      "checking": "Wird geprüft…",
+      "unknown": "Konnte nicht geprüft werden"
+    },
+    "add": "Hinzufügen",
+    "addSlot": "{{slot}} hinzufügen",
+    "replace": "Ersetzen",
+    "replaceSlot": "{{slot}} ersetzen",
+    "remove": "Entfernen",
+    "removeSlot": "{{slot}} entfernen",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "placeholder": "Neuen Wert einfügen",
+    "newValue": "Neuer Wert für {{slot}}",
+    "errors": {
+      "read": "Der Schlüsselbund konnte nicht gelesen werden. Prüfe, ob er entsperrt ist, und öffne die Einstellungen erneut.",
+      "remove": "Das Geheimnis konnte nicht aus dem Schlüsselbund entfernt werden.",
+      "save": "Das Geheimnis konnte nicht im Schlüsselbund gespeichert werden."
+    }
+  },
+  "hotkeys": {
+    "search": {
+      "placeholder": "Tastenkürzel suchen…",
+      "label": "Tastenkürzel suchen"
+    },
+    "conflict": "Steht in Konflikt mit einem anderen Tastenkürzel",
+    "recording": "Tasten drücken…",
+    "reset": "Zurücksetzen",
+    "resetTitle": "Auf Standard zurücksetzen",
+    "aria": {
+      "recording": "Tastenkürzel für {{command}} wird aufgezeichnet",
+      "change": "Tastenkürzel für {{command}} ändern",
+      "reset": "Tastenkürzel für {{command}} zurücksetzen"
+    }
+  },
+  "markdown": {
+    "title": "Markdown-Funktionen",
+    "gfm": {
+      "label": "Tabellen & Aufgabenlisten",
+      "description": "GitHub Flavored Markdown: Tabellen, Aufgabenlisten, Durchstreichen, Autolinks"
+    },
+    "math": {
+      "label": "Mathematik",
+      "description": "KaTeX-Formeln: $inline$ und $$block$$"
+    },
+    "alerts": {
+      "label": "Hinweise",
+      "description": "Callouts im GitHub-Stil: > [!NOTE], [!TIP], [!WARNING]"
+    },
+    "emoji": {
+      "label": "Emoji-Kürzel",
+      "description": ":smile: in Emoji umwandeln"
+    },
+    "wikilinks": {
+      "label": "Wikilinks",
+      "description": "[[Notiz]]-Links im Arbeitsbereich auflösen"
+    }
+  },
+  "defaultApp": {
+    "title": "Standard-App",
+    "label": "Standard-Markdown-App",
+    "description": "Markdown-Dateien standardmäßig in Glyph öffnen.",
+    "button": "Glyph als Standard festlegen",
+    "working": "Wird ausgeführt…",
+    "outcome": {
+      "registered": "Glyph ist jetzt deine Standard-Markdown-App.",
+      "openedSettings": "Einstellungen für Standard-Apps geöffnet. Wähle dort Glyph für Markdown-Dateien.",
+      "guidance": "Klicke im Finder mit der rechten Maustaste auf eine Markdown-Datei, wähle „Informationen“, stelle „Öffnen mit“ auf Glyph und klicke auf „Alle ändern“.",
+      "error": "Standard-App konnte nicht festgelegt werden. Lege sie stattdessen in den Systemeinstellungen fest."
+    }
+  }
+}

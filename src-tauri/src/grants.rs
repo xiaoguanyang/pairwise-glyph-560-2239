@@ -1,0 +1,878 @@
+//! Backend-managed filesystem grants: every filesystem command validates its
+//! path against this registry. Grants are minted only from backend-observed
+//! events (CLI args, drag-and-drop, native dialogs, a folder the user allows
+//! in an MCP client's prompt), never from a bare webview- or model-supplied
+//! path. See docs/security/threat-model.md.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use crate::extensions::{has_extension, IMAGE_EXTENSIONS, MEDIA_EXTENSIONS};
+
+/// Managed state holding every path the webview may touch this session.
+#[derive(Default)]
+pub struct GrantRegistry {
+    inner: Mutex<Grants>,
+}
+
+#[derive(Default)]
+struct Grants {
+    /// Open workspace roots: recursive read + write.
+    workspaces: HashSet<PathBuf>,
+    /// Explicitly opened loose files: exact-path read, write (autosave), watch.
+    files: HashSet<PathBuf>,
+    /// Folders holding an opened loose file: the image, audio, and video files
+    /// in them load as that document's assets, through the asset protocol only.
+    document_dirs: HashSet<PathBuf>,
+    /// Approved export destination folders: recursive write, plus the prune
+    /// a repeat website export performs over its own previous output.
+    export_dirs: HashSet<PathBuf>,
+    /// Approved single-file export targets: exact-path write only.
+    export_files: HashSet<PathBuf>,
+    /// Folder picked for a plugin install, consumed once by `install_plugin`.
+    pending_plugin_dir: Option<PathBuf>,
+}
+
+/// Denials echo only the requested path, never the grant list.
+fn denied(path: &Path) -> String {
+    format!(
+        "path is outside the allowed workspaces and files: {}",
+        path.display()
+    )
+}
+
+/// Canonicalize tolerating a not-yet-existing tail; a `..` or `.` in the
+/// missing tail makes `file_name()` return `None` and is rejected.
+fn canonicalize_lenient(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Ok(canonical);
+    }
+    let parent = path.parent().ok_or_else(|| denied(path))?;
+    let name = path.file_name().ok_or_else(|| denied(path))?;
+    Ok(canonicalize_lenient(parent)?.join(name))
+}
+
+/// Refuse a path that names a network share or a device, unless a grant
+/// already sits on that share. Resolving one connects to the host, which can
+/// hand it the user's credentials, and a renderer or a model can name any host
+/// it likes.
+#[cfg(windows)]
+fn refuse_remote(grants: &Grants, path: &Path) -> Result<(), String> {
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return Ok(());
+    };
+    let share = match prefix.kind() {
+        Prefix::Disk(_) | Prefix::VerbatimDisk(_) => return Ok(()),
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => (server, share),
+        Prefix::Verbatim(_) | Prefix::DeviceNS(_) => return Err(remote(path)),
+    };
+    let on_share = |root: &PathBuf| match root.components().next() {
+        Some(Component::Prefix(known)) => matches!(
+            known.kind(),
+            Prefix::UNC(server, name) | Prefix::VerbatimUNC(server, name) if (server, name) == share
+        ),
+        _ => false,
+    };
+    let mut granted = grants
+        .workspaces
+        .iter()
+        .chain(&grants.files)
+        .chain(&grants.export_dirs)
+        .chain(&grants.export_files);
+    if granted.any(on_share) {
+        Ok(())
+    } else {
+        Err(remote(path))
+    }
+}
+
+#[cfg(windows)]
+fn remote(path: &Path) -> String {
+    format!(
+        "{} is a network or device path, which is never looked up",
+        path.display()
+    )
+}
+
+/// Only Windows resolves a path by connecting to the host it names.
+#[cfg(not(windows))]
+fn refuse_remote(_: &Grants, _: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+impl GrantRegistry {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Grants>, String> {
+        self.inner.lock().map_err(|e| format!("Lock error: {e}"))
+    }
+
+    /// Grant recursive read + write on an existing workspace root.
+    pub fn grant_workspace(&self, root: &Path) -> Result<PathBuf, String> {
+        let canonical = root.canonicalize().map_err(|_| denied(root))?;
+        self.lock()?.workspaces.insert(canonical.clone());
+        Ok(canonical)
+    }
+
+    /// Grant a root already resolved and shown to the user, as it stands:
+    /// resolving it again could follow a link swapped in since, to a folder
+    /// they never saw.
+    #[cfg(desktop)]
+    pub fn grant_resolved_workspace(&self, resolved: PathBuf) -> Result<(), String> {
+        self.lock()?.workspaces.insert(resolved);
+        Ok(())
+    }
+
+    /// Not wired to any command yet: grants stay session-scoped; kept as the
+    /// API for a future explicit-revoke flow.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn revoke_workspace(&self, root: &Path) {
+        if let Ok(canonical) = root.canonicalize() {
+            if let Ok(mut grants) = self.lock() {
+                grants.workspaces.remove(&canonical);
+            }
+        }
+    }
+
+    /// Grant exact-path read + write + watch on an existing loose file, and
+    /// asset loading for the media in its folder (`ensure_document_asset`).
+    pub fn grant_file(&self, path: &Path) -> Result<PathBuf, String> {
+        let canonical = path.canonicalize().map_err(|_| denied(path))?;
+        // A folder passed as a file (a hand-edited settings entry) records nothing.
+        let document_dir = canonical
+            .parent()
+            .filter(|_| canonical.is_file())
+            .map(Path::to_path_buf);
+        let mut grants = self.lock()?;
+        grants.files.insert(canonical.clone());
+        grants.document_dirs.extend(document_dir);
+        Ok(canonical)
+    }
+
+    /// Allow an existing image, audio, or video file inside the folder of an
+    /// opened loose file, judged after symlinks resolve. Serves the asset
+    /// protocol only: `ensure_readable` keeps the exact-path rule.
+    pub fn ensure_document_asset(&self, path: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(path);
+        refuse_remote(&*self.lock()?, requested)?;
+        let canonical = requested.canonicalize().map_err(|_| denied(requested))?;
+        let is_media = has_extension(&canonical, IMAGE_EXTENSIONS)
+            || has_extension(&canonical, MEDIA_EXTENSIONS);
+        let beside_document = self
+            .lock()?
+            .document_dirs
+            .iter()
+            .any(|dir| canonical.starts_with(dir));
+        if is_media && beside_document && canonical.is_file() {
+            Ok(canonical)
+        } else {
+            Err(denied(requested))
+        }
+    }
+
+    /// Grant recursive write on an export destination folder (may not exist yet).
+    /// Export flows are desktop-only (native pickers, CLI export).
+    #[cfg(desktop)]
+    pub fn grant_export_dir(&self, dir: &Path) -> Result<PathBuf, String> {
+        let canonical = canonicalize_lenient(dir)?;
+        self.lock()?.export_dirs.insert(canonical.clone());
+        Ok(canonical)
+    }
+
+    /// Grant exact-path write on a single export target (may not exist yet).
+    #[cfg(desktop)]
+    pub fn grant_export_file(&self, path: &Path) -> Result<PathBuf, String> {
+        let canonical = canonicalize_lenient(path)?;
+        self.lock()?.export_files.insert(canonical.clone());
+        Ok(canonical)
+    }
+
+    /// Export grants deliberately do not count as readable: a compromised
+    /// renderer cannot read back what an export wrote. (`prune_export_dir`
+    /// reads its own manifest in Rust, never through this check.)
+    pub fn ensure_readable(&self, path: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(path);
+        refuse_remote(&*self.lock()?, requested)?;
+        let canonical = canonicalize_lenient(requested)?;
+        let grants = self.lock()?;
+        if grants.files.contains(&canonical)
+            || grants.workspaces.iter().any(|w| canonical.starts_with(w))
+        {
+            Ok(canonical)
+        } else {
+            Err(denied(requested))
+        }
+    }
+
+    pub fn ensure_writable(&self, path: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(path);
+        refuse_remote(&*self.lock()?, requested)?;
+        let canonical = canonicalize_lenient(requested)?;
+        let grants = self.lock()?;
+        if grants.files.contains(&canonical)
+            || grants.export_files.contains(&canonical)
+            || grants.workspaces.iter().any(|w| canonical.starts_with(w))
+            || grants.export_dirs.iter().any(|d| canonical.starts_with(d))
+        {
+            Ok(canonical)
+        } else {
+            Err(denied(requested))
+        }
+    }
+
+    /// See [`refuse_remote`]: for a path a caller resolves itself.
+    pub fn refuse_remote(&self, path: &str) -> Result<(), String> {
+        refuse_remote(&*self.lock()?, Path::new(path))
+    }
+
+    /// Watching follows the read rule.
+    pub fn ensure_watchable(&self, path: &str) -> Result<PathBuf, String> {
+        self.ensure_readable(path)
+    }
+
+    /// Require `root` to be exactly a granted workspace root, not a path inside one.
+    pub fn ensure_workspace(&self, root: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(root);
+        refuse_remote(&*self.lock()?, requested)?;
+        let canonical = requested.canonicalize().map_err(|_| denied(requested))?;
+        if self.lock()?.workspaces.contains(&canonical) {
+            Ok(canonical)
+        } else {
+            Err(denied(requested))
+        }
+    }
+
+    /// Plugin installs start from the desktop-only native folder picker.
+    #[cfg(desktop)]
+    pub fn set_pending_plugin_dir(&self, dir: PathBuf) {
+        if let Ok(mut grants) = self.lock() {
+            grants.pending_plugin_dir = Some(dir);
+        }
+    }
+
+    /// Consume the pending plugin-install folder (one install per pick).
+    pub fn take_pending_plugin_dir(&self) -> Option<PathBuf> {
+        self.lock().ok()?.pending_plugin_dir.take()
+    }
+
+    /// Read the pending plugin-install folder without consuming it, so the
+    /// manifest can be inspected for consent before the install.
+    pub fn peek_pending_plugin_dir(&self) -> Option<PathBuf> {
+        self.lock().ok()?.pending_plugin_dir.clone()
+    }
+
+    /// Seed grants from the persisted settings store (open tabs, recent files);
+    /// absent keys, corrupt JSON, and deleted paths silently stay denied.
+    ///
+    /// Trust note: settings.json is renderer-writable, so it can stage grants for
+    /// the next launch; that matches the trust it already carries (see docs/security/threat-model.md).
+    /// Session restore runs from the desktop-only CLI setup block.
+    #[cfg(desktop)]
+    pub fn seed_from_settings_json(&self, raw: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let mut workspaces = Vec::new();
+        let mut files = Vec::new();
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return (workspaces, files);
+        };
+        let behavior = &value["settings"]["behavior"];
+        if let Some(tabs) = behavior["openTabs"].as_array() {
+            for tab in tabs {
+                let path = tab["path"]
+                    .as_str()
+                    .filter(|path| self.refuse_remote(path).is_ok());
+                let Some(path) = path else {
+                    continue;
+                };
+                match tab["kind"].as_str() {
+                    // Graph tabs carry the workspace root as their path.
+                    Some("folder") | Some("graph") => {
+                        if let Ok(canonical) = self.grant_workspace(Path::new(path)) {
+                            workspaces.push(canonical);
+                        }
+                    }
+                    Some("file") => {
+                        if let Ok(canonical) = self.grant_file(Path::new(path)) {
+                            files.push(canonical);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(recent) = behavior["recentFiles"].as_array() {
+            for entry in recent {
+                if let Some(path) = entry
+                    .as_str()
+                    .filter(|path| self.refuse_remote(path).is_ok())
+                {
+                    if let Ok(canonical) = self.grant_file(Path::new(path)) {
+                        files.push(canonical);
+                    }
+                }
+            }
+        }
+        (workspaces, files)
+    }
+}
+
+/// Mirror a directory read grant into the asset-protocol scope; failure is
+/// ignored because the protocol keeps denying, which fails closed.
+pub fn allow_asset_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>, dir: &Path) {
+    use tauri::Manager;
+    let _ = app.asset_protocol_scope().allow_directory(dir, true);
+}
+
+/// Mirror a single-file read grant into the runtime asset-protocol scope.
+pub fn allow_asset_file<R: tauri::Runtime>(app: &tauri::AppHandle<R>, file: &Path) {
+    use tauri::Manager;
+    let _ = app.asset_protocol_scope().allow_file(file);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_network_or_device_path_is_refused_before_it_resolves() {
+        let grants = GrantRegistry::default();
+        for path in [
+            r"\\attacker\share\x.md",
+            r"\\?\UNC\attacker\share\x.md",
+            r"\\.\pipe\glyph",
+        ] {
+            let refusal = grants.ensure_readable(path).unwrap_err();
+            assert!(refusal.contains("never looked up"), "{refusal}");
+            assert!(grants.ensure_writable(path).is_err());
+            assert!(grants.ensure_workspace(path).is_err());
+            let asset = grants.ensure_document_asset(path).unwrap_err();
+            assert!(asset.contains("never looked up"), "{asset}");
+        }
+        let (workspaces, files) = grants.seed_from_settings_json(
+            r#"{"settings":{"behavior":{"openTabs":[{"kind":"folder","path":"\\\\attacker\\share"}],"recentFiles":["\\\\attacker\\share\\x.md"]}}}"#,
+        );
+        assert!(workspaces.is_empty() && files.is_empty());
+
+        // A share the user already opened stays reachable, and only that one.
+        grants
+            .grant_resolved_workspace(PathBuf::from("//trusted/notes/vault"))
+            .unwrap();
+        grants
+            .grant_resolved_workspace(PathBuf::from("relative"))
+            .unwrap();
+        assert!(grants.refuse_remote("//trusted/notes/vault/x.md").is_ok());
+        assert!(grants.refuse_remote("//trusted/other/x.md").is_err());
+        assert!(grants.refuse_remote("relative/x.md").is_ok());
+    }
+
+    fn as_str(path: &Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn everything_is_denied_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a.md");
+        fs::write(&file, "x").unwrap();
+        let grants = GrantRegistry::default();
+
+        for result in [
+            grants.ensure_readable(&as_str(&file)),
+            grants.ensure_writable(&as_str(&file)),
+            grants.ensure_watchable(&as_str(&file)),
+            grants.ensure_workspace(&as_str(tmp.path())),
+        ] {
+            let err = result.expect_err("must be denied");
+            assert!(
+                err.starts_with("path is outside the allowed workspaces and files:"),
+                "unexpected message: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_grant_allows_nested_read_and_write() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("sub").join("deep");
+        fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("note.md");
+        fs::write(&file, "x").unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(tmp.path()).unwrap();
+
+        assert!(grants.ensure_readable(&as_str(&file)).is_ok());
+        assert!(grants.ensure_writable(&as_str(&file)).is_ok());
+        assert!(grants.ensure_watchable(&as_str(tmp.path())).is_ok());
+        assert!(grants.ensure_workspace(&as_str(tmp.path())).is_ok());
+        // A path nested inside is not the workspace root itself.
+        assert!(grants.ensure_workspace(&as_str(&nested)).is_err());
+    }
+
+    #[test]
+    fn dot_dot_traversal_cannot_escape_a_workspace() {
+        let outer = TempDir::new().unwrap();
+        let root = outer.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        let secret = outer.path().join("secret.md");
+        fs::write(&secret, "x").unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(&root).unwrap();
+
+        let sneaky = root.join("..").join("secret.md");
+        assert!(grants.ensure_readable(&as_str(&sneaky)).is_err());
+        // `root/sub/../note.md` resolves back inside and is fine.
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("note.md"), "x").unwrap();
+        let inside = root.join("sub").join("..").join("note.md");
+        assert!(grants.ensure_readable(&as_str(&inside)).is_ok());
+    }
+
+    #[test]
+    fn missing_tail_with_dot_dot_is_denied() {
+        let outer = TempDir::new().unwrap();
+        let root = outer.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(&root).unwrap();
+
+        // `nope` does not exist, so the lenient fallback must reject the `..`
+        // instead of textually appending it.
+        let sneaky = root.join("nope").join("..").join("..").join("out.md");
+        assert!(grants.ensure_writable(&as_str(&sneaky)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_inside_a_workspace_cannot_escape_it() {
+        let outer = TempDir::new().unwrap();
+        let root = outer.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        let secret = outer.path().join("secret.md");
+        fs::write(&secret, "classified").unwrap();
+        let link = root.join("innocent.md");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(&root).unwrap();
+
+        assert!(grants.ensure_readable(&as_str(&link)).is_err());
+    }
+
+    #[test]
+    fn revoked_workspace_is_denied_again() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a.md");
+        fs::write(&file, "x").unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(tmp.path()).unwrap();
+        assert!(grants.ensure_readable(&as_str(&file)).is_ok());
+
+        // A stale grant must not survive on any validation path.
+        grants.revoke_workspace(tmp.path());
+        assert!(grants.ensure_readable(&as_str(&file)).is_err());
+        assert!(grants.ensure_writable(&as_str(&file)).is_err());
+        assert!(grants.ensure_watchable(&as_str(&file)).is_err());
+        assert!(grants.ensure_workspace(&as_str(tmp.path())).is_err());
+    }
+
+    #[test]
+    fn export_grants_never_satisfy_workspace_or_watch() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("site");
+        fs::create_dir_all(&out).unwrap();
+        let target = tmp.path().join("doc.pdf");
+
+        let grants = GrantRegistry::default();
+        grants.grant_export_dir(&out).unwrap();
+        grants.grant_export_file(&target).unwrap();
+
+        // Write-only grants must not open the read-side surfaces.
+        assert!(grants.ensure_workspace(&as_str(&out)).is_err());
+        assert!(grants.ensure_watchable(&as_str(&out)).is_err());
+        assert!(grants.ensure_watchable(&as_str(&target)).is_err());
+    }
+
+    #[test]
+    fn export_dir_missing_tail_with_dot_dot_is_denied() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("site");
+
+        let grants = GrantRegistry::default();
+        grants.grant_export_dir(&out).unwrap();
+
+        // The destination may not exist yet; a crafted tail cannot climb out.
+        let sneaky = out.join("nope").join("..").join("..").join("evil.html");
+        assert!(grants.ensure_writable(&as_str(&sneaky)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_inside_a_workspace_cannot_escape_it() {
+        let outer = TempDir::new().unwrap();
+        let root = outer.path().join("ws");
+        let secret_dir = outer.path().join("secret");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&secret_dir).unwrap();
+        fs::write(secret_dir.join("secret.md"), "classified").unwrap();
+
+        // Junctions are the Windows escape vector symlinks are on unix.
+        let link = root.join("innocent");
+        crate::vault::test_support::link_folder(&secret_dir, &link);
+
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(&root).unwrap();
+
+        assert!(grants
+            .ensure_readable(&as_str(&link.join("secret.md")))
+            .is_err());
+        assert!(grants.ensure_readable(&as_str(&link)).is_err());
+        assert!(grants
+            .ensure_writable(&as_str(&link.join("planted.md")))
+            .is_err());
+    }
+
+    #[test]
+    fn revoke_tolerates_missing_paths_and_a_poisoned_lock() {
+        let tmp = TempDir::new().unwrap();
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(tmp.path()).unwrap();
+
+        grants.revoke_workspace(&tmp.path().join("never-existed"));
+        assert!(grants.ensure_workspace(&as_str(tmp.path())).is_ok());
+
+        // Poison the mutex on purpose: validators must fail closed, not allow.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = grants.inner.lock().unwrap();
+            panic!("poison");
+        }));
+        grants.revoke_workspace(tmp.path());
+        let err = grants.ensure_readable(&as_str(tmp.path())).unwrap_err();
+        assert!(err.contains("Lock error"));
+    }
+
+    #[test]
+    fn loose_file_grant_is_exact_and_read_write() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("open.md");
+        let sibling = tmp.path().join("sibling.md");
+        fs::write(&file, "x").unwrap();
+        fs::write(&sibling, "x").unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_file(&file).unwrap();
+
+        assert!(grants.ensure_readable(&as_str(&file)).is_ok());
+        assert!(grants.ensure_writable(&as_str(&file)).is_ok());
+        assert!(grants.ensure_watchable(&as_str(&file)).is_ok());
+        assert!(grants.ensure_readable(&as_str(&sibling)).is_err());
+        assert!(grants.ensure_writable(&as_str(&sibling)).is_err());
+    }
+
+    #[test]
+    fn loose_file_grant_admits_the_media_in_its_folder_as_assets_only() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("open.md");
+        let image = tmp.path().join("diagram.SVG");
+        let nested = tmp.path().join("media");
+        fs::create_dir_all(&nested).unwrap();
+        let clip = nested.join("clip.mp4");
+        for path in [&file, &image, &clip] {
+            fs::write(path, "x").unwrap();
+        }
+
+        let grants = GrantRegistry::default();
+        assert!(grants.ensure_document_asset(&as_str(&image)).is_err());
+        grants.grant_file(&file).unwrap();
+
+        assert!(grants.ensure_document_asset(&as_str(&image)).is_ok());
+        assert!(grants.ensure_document_asset(&as_str(&clip)).is_ok());
+        // Loadable as an asset, never readable or writable through the commands.
+        assert!(grants.ensure_readable(&as_str(&image)).is_err());
+        assert!(grants.ensure_writable(&as_str(&clip)).is_err());
+    }
+
+    #[test]
+    fn document_assets_refuse_all_but_existing_media_inside_the_folder() {
+        let tmp = TempDir::new().unwrap();
+        let notes = tmp.path().join("notes");
+        let elsewhere = tmp.path().join("elsewhere");
+        let album = notes.join("album.png");
+        fs::create_dir_all(&album).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        let file = notes.join("open.md");
+        let text = notes.join("secret.txt");
+        let other_doc = notes.join("other.md");
+        let outside = elsewhere.join("photo.png");
+        for path in [&file, &text, &other_doc, &outside] {
+            fs::write(path, "x").unwrap();
+        }
+
+        let grants = GrantRegistry::default();
+        grants.grant_file(&file).unwrap();
+
+        for refused in [
+            text,
+            other_doc,
+            outside,
+            notes.join("..").join("elsewhere").join("photo.png"),
+            album,
+            notes.join("missing.png"),
+        ] {
+            let err = grants
+                .ensure_document_asset(&as_str(&refused))
+                .expect_err("must be refused");
+            assert!(
+                err.starts_with("path is outside the allowed workspaces and files:"),
+                "unexpected message for {refused:?}: {err}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_assets_judge_a_symlink_by_its_target() {
+        let tmp = TempDir::new().unwrap();
+        let notes = tmp.path().join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        let file = notes.join("open.md");
+        let outside = tmp.path().join("photo.png");
+        let secret = notes.join("secret.txt");
+        for path in [&file, &outside, &secret] {
+            fs::write(path, "x").unwrap();
+        }
+        let escape = notes.join("escape.png");
+        let disguise = notes.join("disguise.png");
+        std::os::unix::fs::symlink(&outside, &escape).unwrap();
+        std::os::unix::fs::symlink(&secret, &disguise).unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_file(&file).unwrap();
+
+        assert!(grants.ensure_document_asset(&as_str(&escape)).is_err());
+        assert!(grants.ensure_document_asset(&as_str(&disguise)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn document_assets_refuse_media_behind_a_junction_out_of_the_folder() {
+        let tmp = TempDir::new().unwrap();
+        let notes = tmp.path().join("notes");
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&notes).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        let file = notes.join("open.md");
+        fs::write(&file, "x").unwrap();
+        fs::write(elsewhere.join("photo.png"), "x").unwrap();
+        let link = notes.join("pictures");
+        let output = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&link)
+            .arg(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "mklink /J failed: {output:?}");
+
+        let grants = GrantRegistry::default();
+        grants.grant_file(&file).unwrap();
+
+        assert!(grants
+            .ensure_document_asset(&as_str(&link.join("photo.png")))
+            .is_err());
+    }
+
+    #[test]
+    fn a_folder_granted_as_a_file_records_no_document_folder() {
+        let tmp = TempDir::new().unwrap();
+        let folder = tmp.path().join("album");
+        fs::create_dir_all(&folder).unwrap();
+        let beside = tmp.path().join("photo.png");
+        fs::write(&beside, "x").unwrap();
+
+        let grants = GrantRegistry::default();
+        grants.grant_file(&folder).unwrap();
+
+        assert!(grants.ensure_document_asset(&as_str(&beside)).is_err());
+    }
+
+    #[test]
+    fn restored_recent_files_record_their_folders() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("recent.md");
+        let image = tmp.path().join("cover.png");
+        fs::write(&file, "x").unwrap();
+        fs::write(&image, "x").unwrap();
+        let raw = serde_json::json!({
+            "settings": { "behavior": { "recentFiles": [as_str(&file)] } }
+        })
+        .to_string();
+
+        let grants = GrantRegistry::default();
+        grants.seed_from_settings_json(&raw);
+
+        assert!(grants.ensure_document_asset(&as_str(&image)).is_ok());
+    }
+
+    #[test]
+    fn export_dir_is_recursively_writable_but_not_readable() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("site");
+
+        let grants = GrantRegistry::default();
+        grants.grant_export_dir(&out).unwrap();
+
+        let nested = out.join("assets").join("img.png");
+        assert!(grants.ensure_writable(&as_str(&out)).is_ok());
+        assert!(grants.ensure_writable(&as_str(&nested)).is_ok());
+        assert!(grants.ensure_readable(&as_str(&out)).is_err());
+        assert!(grants.ensure_readable(&as_str(&nested)).is_err());
+    }
+
+    #[test]
+    fn export_file_grant_is_exact_write_only() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("doc.pdf");
+        let sibling = tmp.path().join("other.pdf");
+
+        let grants = GrantRegistry::default();
+        grants.grant_export_file(&target).unwrap();
+
+        assert!(grants.ensure_writable(&as_str(&target)).is_ok());
+        assert!(grants.ensure_writable(&as_str(&sibling)).is_err());
+        assert!(grants.ensure_readable(&as_str(&target)).is_err());
+    }
+
+    #[test]
+    fn grants_match_regardless_of_path_spelling() {
+        // Both sides canonicalize, so the frontend's spelling (no Windows
+        // verbatim prefix) still matches.
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a.md");
+        fs::write(&file, "x").unwrap();
+
+        let grants = GrantRegistry::default();
+        let canonical = grants.grant_workspace(tmp.path()).unwrap();
+        assert!(grants.ensure_readable(&as_str(&file)).is_ok());
+        assert!(grants.ensure_workspace(&as_str(&canonical)).is_ok());
+    }
+
+    #[test]
+    fn grant_workspace_requires_an_existing_directory() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("not-here");
+        let grants = GrantRegistry::default();
+        assert!(grants.grant_workspace(&missing).is_err());
+        assert!(grants.grant_file(&missing.join("a.md")).is_err());
+    }
+
+    #[test]
+    fn pending_plugin_dir_is_consumed_once() {
+        let grants = GrantRegistry::default();
+        assert!(grants.take_pending_plugin_dir().is_none());
+        grants.set_pending_plugin_dir(PathBuf::from("/plugins/src"));
+        assert_eq!(
+            grants.take_pending_plugin_dir(),
+            Some(PathBuf::from("/plugins/src"))
+        );
+        assert!(grants.take_pending_plugin_dir().is_none());
+    }
+
+    #[test]
+    fn seed_from_settings_json_grants_tabs_and_recent_files() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("inner.md"), "x").unwrap();
+        let loose = tmp.path().join("loose.md");
+        fs::write(&loose, "x").unwrap();
+        let recent = tmp.path().join("recent.md");
+        fs::write(&recent, "x").unwrap();
+        let gone = tmp.path().join("gone.md");
+
+        let raw = serde_json::json!({
+            "settings": {
+                "behavior": {
+                    "openTabs": [
+                        { "kind": "folder", "path": ws.to_string_lossy(), "expanded": [] },
+                        { "kind": "file", "path": loose.to_string_lossy() },
+                        { "kind": "graph", "path": ws.to_string_lossy() },
+                        // Degenerate entries: missing path and an unknown kind.
+                        { "kind": "file" },
+                        { "kind": "hologram", "path": loose.to_string_lossy() },
+                    ],
+                    "recentFiles": [recent.to_string_lossy(), gone.to_string_lossy(), 42],
+                }
+            }
+        })
+        .to_string();
+
+        let grants = GrantRegistry::default();
+        let (workspaces, files) = grants.seed_from_settings_json(&raw);
+        assert_eq!(workspaces.len(), 2, "folder + graph tabs");
+        assert_eq!(files.len(), 2, "loose tab + one surviving recent file");
+
+        assert!(grants
+            .ensure_readable(&as_str(&ws.join("inner.md")))
+            .is_ok());
+        assert!(grants.ensure_readable(&as_str(&loose)).is_ok());
+        assert!(grants.ensure_readable(&as_str(&recent)).is_ok());
+        assert!(grants.ensure_readable(&as_str(&gone)).is_err());
+    }
+
+    #[test]
+    fn seed_from_settings_json_tolerates_garbage() {
+        let grants = GrantRegistry::default();
+        for raw in [
+            "",
+            "not json",
+            "{}",
+            r#"{"settings":{}}"#,
+            r#"{"settings":{"behavior":{"openTabs":"nope"}}}"#,
+        ] {
+            let (workspaces, files) = grants.seed_from_settings_json(raw);
+            assert!(workspaces.is_empty());
+            assert!(files.is_empty());
+        }
+    }
+
+    #[test]
+    fn asset_scope_mirrors_dir_and_file_grants() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+
+        let dir_grant = TempDir::new().unwrap();
+        let nested = dir_grant.path().join("sub");
+        fs::create_dir_all(&nested).unwrap();
+        let inside = nested.join("img.png");
+        fs::write(&inside, "x").unwrap();
+        allow_asset_dir(app.handle(), dir_grant.path());
+        assert!(app.asset_protocol_scope().is_allowed(&inside));
+
+        let file_grant = TempDir::new().unwrap();
+        let file = file_grant.path().join("cover.png");
+        let sibling = file_grant.path().join("other.png");
+        fs::write(&file, "x").unwrap();
+        fs::write(&sibling, "x").unwrap();
+        allow_asset_file(app.handle(), &file);
+        assert!(app.asset_protocol_scope().is_allowed(&file));
+        assert!(!app.asset_protocol_scope().is_allowed(&sibling));
+    }
+
+    #[test]
+    fn ensure_readable_returns_the_canonical_path() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a.md");
+        fs::write(&file, "x").unwrap();
+        let grants = GrantRegistry::default();
+        grants.grant_workspace(tmp.path()).unwrap();
+
+        let resolved = grants.ensure_readable(&as_str(&file)).unwrap();
+        assert_eq!(resolved, file.canonicalize().unwrap());
+    }
+}

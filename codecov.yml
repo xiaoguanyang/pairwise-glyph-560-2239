@@ -1,0 +1,116 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+      frontend:
+        flags:
+          - frontend
+        target: 80%
+        threshold: 1%
+      rust:
+        flags:
+          - rust
+        target: 85%
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+  hide_project_coverage: false
+
+flags:
+  frontend:
+    paths:
+      - src/
+    carryforward: true
+  rust:
+    paths:
+      - src-tauri/src/
+    carryforward: true
+
+ignore:
+  - "src/main.tsx"
+  - "src/vite-env.d.ts"
+  - "src/test/**"
+  - "src/components/icons/**"
+  # Export rasterization is browser-rendering glue (html2canvas, Mermaid SVG
+  # rendering, canvas/Image). It needs a real layout/canvas engine, so it can't
+  # run in the happy-dom test environment; its caller (prepareContent) is tested
+  # with these helpers mocked.
+  - "src/lib/export/rasterize.ts"
+  - "src-tauri/src/main.rs"
+  # Tauri-runtime menu wiring (build_menu, apply_menu_state, handle_menu_event):
+  # every line drives the native menu manager and can't be exercised from
+  # MockRuntime. The testable halves live in menu.rs with direct tests.
+  - "src-tauri/src/menu_runtime/**"
+  # finish_cli_export terminates the process via std::process::exit, which a
+  # unit test cannot survive. The testable halves (CLI export state and the
+  # stdout/stderr routing) live in commands/export.rs with direct tests.
+  - "src-tauri/src/commands/export_runtime.rs"
+  # set_default_markdown_app is pure OS handler-registration glue: each arm
+  # shells out to a real process (xdg-mime on Linux, `start ms-settings:` on
+  # Windows) or returns static guidance (macOS). There's no logic to exercise
+  # without spawning real processes and mutating the host's default-app
+  # registration, so it can't run under test.
+  - "src-tauri/src/commands/default_app.rs"
+  # Multi-window runtime wiring (focus/spawn/emit_to real windows + the
+  # set_window_workspace / request_open command shims): every line drives the
+  # live window manager and can't be reached from MockRuntime. The routing
+  # decision (route_open) and the registry live in windows.rs with direct tests.
+  - "src-tauri/src/windows_runtime.rs"
+  # Native pick dialogs (commands/pick.rs): every command drives a live OS
+  # file dialog via tauri-plugin-dialog's blocking API, which cannot be
+  # exercised from MockRuntime. The grant minting they call into lives in
+  # grants.rs with direct tests.
+  - "src-tauri/src/commands/pick.rs"
+  # lib.rs hosts the Tauri `run()` entry point; every line in that
+  # function calls into a real Builder/runtime, which can't be reached
+  # from MockRuntime unit tests. The testable functions (`handle_second_instance`,
+  # `make_app_builder`) keep their dedicated tests in lib.rs's own
+  # `#[cfg(test)] mod tests`; we just don't track lib.rs lines toward
+  # project / patch coverage.
+  - "src-tauri/src/lib.rs"
+  # setup.rs and window_events.rs are the bodies of `run()`'s setup and
+  # on_window_event closures, lifted out of lib.rs so that file stays plugin
+  # registration plus the command table. They inherit lib.rs's reason
+  # unchanged: `setup_app` takes a real `tauri::App` and `handle_window_event`
+  # a real `Window`, neither of which MockRuntime provides, and the CLI
+  # branch calls `std::process::exit`. Their decision logic is tested where
+  # it lives: `cli::launch_plan` in cli.rs, `route_open` in windows.rs,
+  # `is_supported_file` in lib.rs's own tests.
+  - "src-tauri/src/setup.rs"
+  - "src-tauri/src/window_events.rs"
+  # sync/commands.rs is one-line `#[tauri::command]` wrappers around
+  # `super::ops::*`. The proc-macro emits IPC marshalling shims attributed
+  # to each wrapper's signature line; those macro-generated branches aren't
+  # reachable from a direct call. Real logic lives in `ops.rs` and is
+  # covered there; the wrappers themselves have their own IPC-dispatch
+  # suite in `#[cfg(test)] mod tests` for sanity.
+  - "src-tauri/src/sync/commands.rs"
+  # AppShell.tsx is the frontend wiring shell (the analog of lib.rs on the
+  # Rust side): it only instantiates hooks, wires menu/command handlers, and
+  # renders children. Exercising its branches means standing up a full-app
+  # harness (Tabs, Sidebar, Settings, Tauri menu + native event listeners)
+  # just to flip flags like `experimental.cloudSync`. Each slice of that
+  # gating is already covered by the per-hook tests it delegates to
+  # (useAppCommands, useNativeMenuState, useMenuEvents, StatusBar,
+  # SyncStatusIndicator), so we don't track AppShell.tsx lines toward
+  # project / patch coverage. See .claude/rules/app-shell.md.
+  - "src/components/AppShell.tsx"
+  # MarkdownEditor.tsx instantiates a CodeMirror EditorView, which needs a real
+  # browser layout/measurement engine (getBoundingClientRect, focus, key
+  # dispatch) that happy-dom doesn't provide; every consumer (SplitView) mocks
+  # it for the same reason. The testable piece (keymap-preset resolution) is
+  # extracted to src/lib/editorKeymap.ts and covered there.
+  - "src/components/editor/MarkdownEditor.tsx"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"

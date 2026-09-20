@@ -1,0 +1,25 @@
+import { useEffect, useState } from "react";
+import type { Options } from "react-markdown";
+import {
+  HIGHLIGHT_OPTIONS,
+  hasCodeBlock,
+  loadHighlight,
+} from "@/components/markdown/lazyHighlight";
+
+type RehypePlugin = NonNullable<Options["rehypePlugins"]>[number];
+
+/**
+ * Lazily loads `rehype-highlight` the first time `content` contains a fenced
+ * code block. Returns `null` until the plugin is ready or if no code is present.
+ */
+export function useHighlightPlugin(content: string): RehypePlugin | null {
+  const contentHasCode = hasCodeBlock(content);
+  const [plugin, setPlugin] = useState<RehypePlugin | null>(null);
+
+  useEffect(() => {
+    if (!contentHasCode) return;
+    loadHighlight().then((p) => setPlugin(() => [p, HIGHLIGHT_OPTIONS] as RehypePlugin));
+  }, [contentHasCode]);
+
+  return contentHasCode ? plugin : null;
+}

@@ -1,0 +1,34 @@
+changelog:
+  categories:
+    # First, because a reader who upgrades without noticing it is the one this
+    # section exists for. GitHub groups by label only, so the `!` in a
+    # conventional-commit subject (`feat(cli)!:`) does not reach the notes on
+    # its own; the PR needs the `breaking` label.
+    - title: "💥 Breaking Changes"
+      labels:
+        - breaking
+    - title: "🚀 Features"
+      labels:
+        - enhancement
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+    - title: "🔒 Security"
+      labels:
+        - security
+    - title: "🧪 Testing & CI"
+      labels:
+        - ci
+        - testing
+    - title: "📦 Dependencies"
+      labels:
+        - dependencies
+    - title: "📝 Documentation"
+      labels:
+        - documentation
+    - title: "🔧 Other Changes"
+      labels:
+        - "*"
+  exclude:
+    labels:
+      - skip-changelog

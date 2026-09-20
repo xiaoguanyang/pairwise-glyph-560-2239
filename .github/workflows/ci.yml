@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  # Push: only protect `main`. Feature branches use PR runs for
+  # validation; direct pushes to feature branches don't need their own
+  # CI fire.
+  push:
+    branches: [main]
+  # PR: every PR runs the gate regardless of target branch so stacked
+  # PRs against `feature/*` get the same checks as PRs to `main`.
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only for every job, including the reusable workflows below: a called
+# workflow can never hold more than the caller grants it.
+permissions:
+  contents: read
+
+# Orchestrator: the actual jobs live in the reusable workflows below.
+jobs:
+  pr-title:
+    name: PR title (conventional commits)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if echo "$TITLE" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([^)]+\))?(!)?: .+'; then
+            echo "OK: $TITLE"
+          else
+            echo "::error::PR title must follow Conventional Commits (e.g. feat: add feature, fix(scope): description). See https://www.conventionalcommits.org/"
+            exit 1
+          fi
+
+  # The PR box renders these as "CI / <caller name> / <job>", e.g.
+  # "CI / Checks / Lint"; required contexts are "<caller name> / <job>".
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci-checks.yml
+
+  tests:
+    name: Tests
+    uses: ./.github/workflows/ci-tests.yml
+    secrets: inherit
+
+  smoke:
+    name: Smoke
+    uses: ./.github/workflows/ci-smoke.yml
+
+  validate-flatpak:
+    name: Validate Flatpak metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream desktop-file-utils python3-yaml
+      - name: Validate AppStream metainfo
+        run: appstreamcli validate --no-net flatpak/com.hamidfzm.glyph.metainfo.xml
+      - name: Validate desktop entry
+        run: desktop-file-validate flatpak/com.hamidfzm.glyph.desktop
+      - name: Validate manifest parses
+        run: python3 -c "import yaml; yaml.safe_load(open('flatpak/com.hamidfzm.glyph.yml'))"
+
+  build:
+    name: Build
+    # Gate builds on the fast checks only (~40s); tests run in parallel
+    # with the builds instead of in front of them.
+    needs: checks
+    uses: ./.github/workflows/ci-build.yml
+    secrets: inherit

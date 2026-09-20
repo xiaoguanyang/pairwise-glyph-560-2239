@@ -1,0 +1,103 @@
+import { describe, expect, it, vi } from "vitest";
+import type { MarkdownPlugin } from "@/lib/plugins/types";
+import { buildRehypePlugins, buildRemarkPlugins } from "./pipeline";
+import { rehypeSourceLines } from "./rehypeSourceLines";
+
+// Plugin entries are functions or [plugin, options] tuples; compare by reference.
+const ref = (p: MarkdownPlugin) => (Array.isArray(p) ? p[0] : p);
+
+describe("buildRemarkPlugins", () => {
+  it("includes the built-in remark plugins and appends extras in order", () => {
+    const extraA = vi.fn();
+    const extraB = vi.fn();
+    const plugins = buildRemarkPlugins({ extra: [extraA, extraB] });
+
+    // The built-ins come first; the two extras come last, in the given order.
+    expect(plugins.slice(-2).map(ref)).toEqual([extraA, extraB]);
+    expect(plugins.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("threads the index's link resolutions into the wikilink plugin", () => {
+    const resolutions = new Map([["a", "/w/a.md"]]);
+    const plugins = buildRemarkPlugins({ resolutions });
+    const wikilink = plugins.find((p) => Array.isArray(p)) as [unknown, Record<string, unknown>];
+    expect(wikilink[1]).toEqual({ resolutions });
+  });
+
+  it("works with no extras", () => {
+    expect(buildRemarkPlugins({}).length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("includes the gemoji plugin only when the caller provides it resolved", () => {
+    const gemoji = vi.fn();
+    const withGemoji = buildRemarkPlugins({ gemojiPlugin: gemoji });
+    expect(withGemoji.map(ref)).toContain(gemoji);
+    expect(withGemoji.length).toBe(buildRemarkPlugins({}).length + 1);
+    expect(buildRemarkPlugins({ gemojiPlugin: null }).map(ref)).not.toContain(gemoji);
+  });
+
+  it("drops a feature's plugin when its toggle is off", () => {
+    const all = buildRemarkPlugins({});
+    const noMath = buildRemarkPlugins({ features: { math: false } });
+    expect(noMath.length).toBe(all.length - 1);
+
+    // Wikilinks is the only tuple entry; disabling it removes the tuple.
+    const noWikilinks = buildRemarkPlugins({ features: { wikilinks: false } });
+    expect(noWikilinks.some((p) => Array.isArray(p))).toBe(false);
+  });
+
+  it("disabling every feature leaves only frontmatter plus extras", () => {
+    const extra = vi.fn();
+    const plugins = buildRemarkPlugins({
+      features: { gfm: false, math: false, alerts: false, emoji: false, wikilinks: false },
+      extra: [extra],
+    });
+    expect(plugins.length).toBe(2); // frontmatter + the extra
+    expect(ref(plugins[1])).toBe(extra);
+  });
+
+  it("treats omitted feature keys as enabled", () => {
+    const partial = buildRemarkPlugins({ features: { math: false } });
+    const full = buildRemarkPlugins({ features: {} });
+    expect(full.length).toBe(partial.length + 1);
+  });
+});
+
+describe("buildRehypePlugins", () => {
+  it("omits highlight/katex when not provided", () => {
+    const plugins = buildRehypePlugins({});
+    expect(plugins.length).toBe(3); // raw, sanitize, slug
+  });
+
+  it("appends highlight, katex, then plugin extras in order", () => {
+    const highlight = vi.fn();
+    const katex = vi.fn();
+    const extra = vi.fn();
+    const plugins = buildRehypePlugins({
+      highlightPlugin: highlight,
+      katexPlugin: katex,
+      extra: [extra],
+    });
+    expect(plugins.slice(-3).map(ref)).toEqual([highlight, katex, extra]);
+  });
+
+  it("keeps sanitize ahead of plugin extras", () => {
+    const extra = vi.fn();
+    const plugins = buildRehypePlugins({ extra: [extra] });
+    // sanitize is a [plugin, schema] tuple in the first three; extra is last.
+    expect(ref(plugins[plugins.length - 1])).toBe(extra);
+    expect(plugins.some((p) => Array.isArray(p))).toBe(true);
+  });
+
+  it("omits the source-line markers unless asked for them", () => {
+    expect(buildRehypePlugins({}).map(ref)).not.toContain(rehypeSourceLines);
+  });
+
+  // Sanitize strips `data-*` from document content, so the markers only survive
+  // by being added after it.
+  it("adds the source-line markers after sanitize", () => {
+    const plugins = buildRehypePlugins({ sourceLines: true });
+    const sanitizeAt = plugins.findIndex((p) => Array.isArray(p));
+    expect(plugins.map(ref).indexOf(rehypeSourceLines)).toBeGreaterThan(sanitizeAt);
+  });
+});

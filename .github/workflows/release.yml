@@ -1,0 +1,957 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Read-only by default: the publish-* jobs only download release assets and
+# push to satellite repos with their own secrets, so only the four jobs that
+# write to this repo's release get write (publish-aur uploads the PKGBUILD).
+permissions:
+  contents: read
+
+jobs:
+  # Create the release once before the build matrix; parallel tauri-action
+  # jobs racing to create it fail with "already_exists".
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Glyph $GITHUB_REF_NAME" \
+            --notes-file .github/release-install.md
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: ubuntu-22.04-arm
+            args: ""
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    # tauri-action uploads the bundles to the release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        timeout-minutes: 8
+        uses: ./.github/actions/linux-deps
+        with:
+          cache-key: apt-webkit-${{ matrix.platform }}-v1
+          extra-packages: xdg-utils
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Enables source-map upload from the Vite build (vite.config.ts). When
+          # unset (e.g. forks), the Sentry plugin is skipped and the build still
+          # succeeds.
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          args: ${{ matrix.args }}
+      # Gate channel publishing on the built-app smoke: a failure fails this
+      # build leg, and every publish-* job needs: build, so nothing is pushed
+      # to a package channel (the GitHub release and its assets are already
+      # uploaded by this point). One x64 Linux leg is enough (WebKitWebDriver).
+      - name: Built-app smoke test
+        if: matrix.platform == 'ubuntu-22.04'
+        timeout-minutes: 10
+        uses: ./.github/actions/app-smoke
+
+  update-release-notes:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      changelog: ${{ steps.notes.outputs.changelog }}
+    # Edits the release body and links the Announcements discussion.
+    permissions:
+      contents: write
+      discussions: write
+    steps:
+      # Full history and tags: the previous tag is read off this tag's own
+      # lineage, so a hotfix cut from an older tag diffs against that tag
+      # instead of against whatever happened to ship most recently.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Generate changelog and prepend install instructions
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          PREVIOUS_TAG=$(bash scripts/release-changelog.sh previous-tag "${{ github.ref_name }}")
+
+          # Pull request metadata for the fallback below. A release cut from
+          # main's tip never reaches it, so this is a handful of wasted calls
+          # once per release, against a decision the script owns and tests.
+          for number in $(bash scripts/release-changelog.sh pull-requests "${{ github.ref_name }}" "$PREVIOUS_TAG"); do
+            gh api "repos/${{ github.repository }}/pulls/$number" \
+              --jq '{n: .number, title: .title, author: .user.login, labels: [.labels[].name]}'
+          done | jq -s . > /tmp/pull-requests.json
+
+          CHANGELOG=$(gh api repos/${{ github.repository }}/releases/generate-notes \
+            -f tag_name="${{ github.ref_name }}" \
+            -f previous_tag_name="$PREVIOUS_TAG" \
+            --jq .body \
+            | bash scripts/release-changelog.sh body "${{ github.ref_name }}" "$PREVIOUS_TAG" /tmp/pull-requests.json)
+
+          # Chocolatey renders the same changelog, so hand it the resolved
+          # text instead of letting that job generate a second copy.
+          {
+            echo "changelog<<NOTES_EOF"
+            printf '%s\n' "$CHANGELOG"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          { cat .github/release-install.md; printf '\n---\n\n%s' "$CHANGELOG"; } > /tmp/release-body.md
+          gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --notes-file /tmp/release-body.md
+
+          # Create the linked Announcements discussion after the notes are
+          # final, so the discussion body carries the full changelog.
+          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" --jq .id)
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" \
+            -f discussion_category_name=Announcements
+
+      # A release is created as "latest" by default. A hotfix cut from an
+      # older line is not the newest version, so hand the pointer back: the
+      # ecosystem health check and the smoke test both resolve "latest".
+      - name: Keep the latest pointer on the highest version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HIGHEST=$(gh release list --repo "${{ github.repository }}" --limit 100 \
+            --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select((.isDraft or .isPrerelease) | not) | .tagName' \
+            | sort -V | tail -1)
+          if [ -n "$HIGHEST" ] && [ "$HIGHEST" != "${{ github.ref_name }}" ]; then
+            echo "$HIGHEST is newer than ${{ github.ref_name }}; leaving the latest pointer alone."
+            gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --latest=false
+          fi
+
+  publish-homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download DMG and compute sha256
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${{ steps.version.outputs.version }}_universal.dmg"
+          SHA=$(shasum -a 256 Glyph_${{ steps.version.outputs.version }}_universal.dmg | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+      - name: Update homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+          HOMEPAGE=$(jq -r .homepage package.json)
+
+          sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{SHA256}}/$SHA/g" \
+            -e "s|{{HOMEPAGE}}|$HOMEPAGE|g" \
+            homebrew/glyph.rb.template > /tmp/glyph.rb
+
+          # Get current file SHA for update (or empty for first push)
+          FILE_SHA=$(gh api repos/glyph-md/homebrew-tap/contents/Casks/glyph.rb --jq .sha 2>/dev/null || echo "")
+
+          if [ -n "$FILE_SHA" ]; then
+            gh api repos/glyph-md/homebrew-tap/contents/Casks/glyph.rb \
+              --method PUT \
+              --field message="chore: update glyph to $VERSION" \
+              --field content="$(base64 -w0 /tmp/glyph.rb)" \
+              --field sha="$FILE_SHA"
+          else
+            gh api repos/glyph-md/homebrew-tap/contents/Casks/glyph.rb \
+              --method PUT \
+              --field message="chore: add glyph cask $VERSION" \
+              --field content="$(base64 -w0 /tmp/glyph.rb)"
+          fi
+      - name: Download Linux debs and compute sha256
+        id: linux_sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${VERSION}_amd64.deb" \
+            --pattern "Glyph_${VERSION}_arm64.deb"
+          echo "sha256_amd64=$(shasum -a 256 "Glyph_${VERSION}_amd64.deb" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sha256_arm64=$(shasum -a 256 "Glyph_${VERSION}_arm64.deb" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: Update homebrew-tap Linux formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA_AMD64="${{ steps.linux_sha.outputs.sha256_amd64 }}"
+          SHA_ARM64="${{ steps.linux_sha.outputs.sha256_arm64 }}"
+          HOMEPAGE=$(jq -r .homepage package.json)
+
+          sed -e "s/{{VERSION}}/$VERSION/g" \
+            -e "s/{{SHA256_AMD64}}/$SHA_AMD64/g" \
+            -e "s/{{SHA256_ARM64}}/$SHA_ARM64/g" \
+            -e "s|{{HOMEPAGE}}|$HOMEPAGE|g" \
+            homebrew/glyph-formula.rb.template > /tmp/glyph.rb
+
+          # Get current file SHA for update (or empty for first push)
+          FILE_SHA=$(gh api repos/glyph-md/homebrew-tap/contents/Formula/glyph.rb --jq .sha 2>/dev/null || echo "")
+
+          if [ -n "$FILE_SHA" ]; then
+            gh api repos/glyph-md/homebrew-tap/contents/Formula/glyph.rb \
+              --method PUT \
+              --field message="chore: update glyph linux formula to $VERSION" \
+              --field content="$(base64 -w0 /tmp/glyph.rb)" \
+              --field sha="$FILE_SHA"
+          else
+            gh api repos/glyph-md/homebrew-tap/contents/Formula/glyph.rb \
+              --method PUT \
+              --field message="chore: add glyph linux formula $VERSION" \
+              --field content="$(base64 -w0 /tmp/glyph.rb)"
+          fi
+
+  publish-chocolatey:
+    needs: [build, update-release-notes]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download MSI and compute sha256
+        id: sha
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" `
+            --repo "${{ github.repository }}" `
+            --pattern "Glyph_${version}_x64_en-US.msi"
+          $hash = (Get-FileHash "Glyph_${version}_x64_en-US.msi" -Algorithm SHA256).Hash.ToLower()
+          "sha256=$hash" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+      - name: Build and push Chocolatey package
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+          CHANGELOG: ${{ needs.update-release-notes.outputs.changelog }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $sha = "${{ steps.sha.outputs.sha256 }}"
+          $repo = "${{ github.repository }}"
+          $tag = "${{ github.ref_name }}"
+
+          # Reuse the changelog the release-notes job already resolved, so the
+          # Chocolatey page and the GitHub release can never disagree.
+          $changelog = $env:CHANGELOG
+          # Drop the leading "<!-- Release notes generated ... -->" comment GitHub
+          # prepends; Chocolatey renders raw HTML as literal text, not a comment.
+          $changelog = ($changelog -replace '(?s)^\s*<!--.*?-->\s*', '').Trim()
+
+          # Append a "Links" section so users can jump to the release page,
+          # docs, and issue tracker straight from the Chocolatey listing.
+          $links = @(
+            "## Links",
+            "",
+            "- Release page: https://github.com/$repo/releases/tag/$tag",
+            "- All releases: https://github.com/$repo/releases",
+            "- Documentation: https://github.com/$repo#readme",
+            "- Report an issue: https://github.com/$repo/issues"
+          ) -join "`n"
+          $notes = "$changelog`n`n$links"
+
+          $install = Get-Content chocolatey/tools/chocolateyinstall.ps1 -Raw
+          $install = $install.Replace('{{SHA256}}', $sha)
+          Set-Content chocolatey/tools/chocolateyinstall.ps1 $install
+
+          # Set the version and inject the changelog via the XML DOM so any
+          # special characters in the notes are escaped correctly.
+          [xml]$nuspec = Get-Content chocolatey/glyph.nuspec -Raw
+          $homepage = (Get-Content package.json -Raw | ConvertFrom-Json).homepage
+          $nuspec.package.metadata.version = $version
+          $nuspec.package.metadata.releaseNotes = $notes
+          $nuspec.package.metadata.projectUrl = $homepage
+          $nuspec.Save("$pwd\chocolatey\glyph.nuspec")
+
+          cd chocolatey
+          choco pack
+          choco push glyph.$version.nupkg --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+
+  publish-scoop:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download MSI and compute sha256
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${VERSION}_x64_en-US.msi"
+          SHA=$(shasum -a 256 "Glyph_${VERSION}_x64_en-US.msi" | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+      - name: Update scoop-bucket
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+          HOMEPAGE=$(jq -r .homepage package.json)
+
+          sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{SHA256}}/$SHA/g" \
+            -e "s|{{HOMEPAGE}}|$HOMEPAGE|g" \
+            scoop/glyph.json.template > /tmp/glyph.json
+
+          # Get current file SHA for update (or empty for first push)
+          FILE_SHA=$(gh api repos/glyph-md/scoop-bucket/contents/bucket/glyph.json --jq .sha 2>/dev/null || echo "")
+
+          if [ -n "$FILE_SHA" ]; then
+            gh api repos/glyph-md/scoop-bucket/contents/bucket/glyph.json \
+              --method PUT \
+              --field message="chore: update glyph to $VERSION" \
+              --field content="$(base64 -w0 /tmp/glyph.json)" \
+              --field sha="$FILE_SHA"
+          else
+            gh api repos/glyph-md/scoop-bucket/contents/bucket/glyph.json \
+              --method PUT \
+              --field message="chore: add glyph $VERSION" \
+              --field content="$(base64 -w0 /tmp/glyph.json)"
+          fi
+
+  publish-winget:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      # Submits a manifest-update PR to microsoft/winget-pkgs for
+      # hamidfzm.Glyph from the released MSI. Reuses TAP_GITHUB_TOKEN (the
+      # classic PAT already used for the tap/bucket/apt repos; winget-releaser
+      # needs public_repo, which repo scope includes) and forks
+      # microsoft/winget-pkgs under the token owner if needed. Skips cleanly
+      # while the secret is missing or the package is not yet in winget-pkgs
+      # (the one-time bootstrap PR, see winget/README.md, may still be in
+      # Microsoft's moderation queue), so it never fails releases before
+      # setup; the first release after the bootstrap merges publishes
+      # automatically (probe-the-target gate, same pattern as publish-dnf).
+      - name: Check winget prerequisites
+        id: gate
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "No TAP_GITHUB_TOKEN secret; skipping winget publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif ! gh api repos/microsoft/winget-pkgs/contents/manifests/h/hamidfzm/Glyph >/dev/null 2>&1; then
+            echo "hamidfzm.Glyph not yet in winget-pkgs (bootstrap pending); skipping winget publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Get version
+        if: steps.gate.outputs.enabled == 'true'
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          identifier: hamidfzm.Glyph
+          version: ${{ steps.version.outputs.version }}
+          release-tag: ${{ github.ref_name }}
+          installers-regex: '_x64_en-US\.msi$'
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+  publish-aur:
+    needs: build
+    runs-on: ubuntu-latest
+    # AUR's SSH endpoint drops into maintenance for days at a time and refuses
+    # every push, which used to fail the whole release. The rendered PKGBUILD
+    # is uploaded to the release before the push so Arch users can build with
+    # `makepkg -si` meanwhile, and the push itself is non-fatal: re-run this
+    # job once the AUR is back.
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download debs and compute sha256
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${VERSION}_amd64.deb" \
+            --pattern "Glyph_${VERSION}_arm64.deb"
+          echo "sha256_amd64=$(shasum -a 256 "Glyph_${VERSION}_amd64.deb" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sha256_arm64=$(shasum -a 256 "Glyph_${VERSION}_arm64.deb" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: Render PKGBUILD and .SRCINFO
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA_AMD64="${{ steps.sha.outputs.sha256_amd64 }}"
+          SHA_ARM64="${{ steps.sha.outputs.sha256_arm64 }}"
+          HOMEPAGE=$(jq -r .homepage package.json)
+
+          mkdir -p /tmp/pkg
+          for file in PKGBUILD .SRCINFO; do
+            sed -e "s/{{VERSION}}/$VERSION/g" \
+              -e "s/{{SHA256_AMD64}}/$SHA_AMD64/g" \
+              -e "s/{{SHA256_ARM64}}/$SHA_ARM64/g" \
+              -e "s|{{HOMEPAGE}}|$HOMEPAGE|g" \
+              "aur/$file" > "/tmp/pkg/$file"
+          done
+      # Runs before the AUR push so an AUR outage still leaves Arch users a
+      # buildable PKGBUILD on the release page.
+      - name: Upload PKGBUILD to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" /tmp/pkg/PKGBUILD \
+            --repo "${{ github.repository }}" --clobber
+      - name: Update AUR package
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Configure SSH for AUR
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -T 10 aur.archlinux.org >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << EOF
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          EOF
+
+          # Clone AUR repo
+          git clone ssh://aur@aur.archlinux.org/glyph-md-bin.git /tmp/aur
+          cp /tmp/pkg/PKGBUILD /tmp/pkg/.SRCINFO /tmp/aur/
+
+          # Push to AUR
+          cd /tmp/aur
+          git config user.name "hamidfzm"
+          git config user.email "hamidfzm@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet || {
+            git commit -m "Update to $VERSION"
+            git push
+          }
+
+  publish-ppa:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        series: [jammy, noble]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install packaging tools
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: sudo apt-get update && sudo apt-get install -y devscripts debhelper dput
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download debs and extract binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${VERSION}_amd64.deb" \
+            --pattern "Glyph_${VERSION}_arm64.deb"
+          dpkg-deb -x "Glyph_${VERSION}_amd64.deb" /tmp/glyph-extracted
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long 2>/dev/null | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> "$GITHUB_ENV"
+      - name: Build source package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SERIES="${{ matrix.series }}"
+          DATE=$(date -R)
+
+          # Set up pristine source tree (no debian/ yet)
+          mkdir -p /tmp/glyph-${VERSION}
+          cp -r /tmp/glyph-extracted/* /tmp/glyph-${VERSION}/
+
+          # Build orig tarball BEFORE adding debian/, with reproducible flags so
+          # every series in the matrix produces a byte-identical file. Launchpad
+          # rejects re-uploads of orig.tar.gz with differing contents.
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$GITHUB_REF_NAME")
+          tar --sort=name \
+              --mtime="@${SOURCE_DATE_EPOCH}" \
+              --owner=0 --group=0 --numeric-owner \
+              -cf - -C /tmp "glyph-${VERSION}" \
+            | gzip -n > /tmp/glyph_${VERSION}.orig.tar.gz
+
+          # Now add debian/ packaging (series-specific changelog lives here, but
+          # debuild ships it as the separate .debian.tar.xz, not in orig.tar.gz).
+          mkdir -p /tmp/glyph-${VERSION}/debian
+          HOMEPAGE=$(jq -r .homepage package.json)
+          sed "s|{{HOMEPAGE}}|$HOMEPAGE|g" ppa/debian/control > /tmp/glyph-${VERSION}/debian/control
+          cp ppa/debian/rules ppa/debian/install /tmp/glyph-${VERSION}/debian/
+
+          # Generate debian/copyright from repo LICENSE file. The holder and
+          # the license id come from tauri.conf.json's bundle metadata, the
+          # same values every other bundle format is stamped with.
+          COPYRIGHT=$(jq -r '.bundle.copyright' src-tauri/tauri.conf.json | sed 's/^Copyright (c) //')
+          LICENSE_ID=$(jq -r '.bundle.license' src-tauri/tauri.conf.json)
+          {
+            echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"
+            echo "Upstream-Name: glyph"
+            echo "Upstream-Contact: hamidfzm <hamidfzm@users.noreply.github.com>"
+            echo "Source: https://github.com/hamidfzm/glyph"
+            echo ""
+            echo "Files: *"
+            echo "Copyright: $COPYRIGHT"
+            echo "License: $LICENSE_ID"
+            echo ""
+            echo "License: $LICENSE_ID"
+            awk 'NR>3{if(/^$/)print " .";else print " "$0}' LICENSE
+          } > /tmp/glyph-${VERSION}/debian/copyright
+
+          sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{SERIES}}/$SERIES/g" -e "s/{{DATE}}/$DATE/g" \
+            ppa/debian/changelog > /tmp/glyph-${VERSION}/debian/changelog
+
+          # Build source package (picks up the orig.tar.gz we created above)
+          cd /tmp/glyph-${VERSION}
+          DEBUILD_LINTIAN=no debuild -S -sa -d -k"$GPG_KEY_ID"
+      - name: Upload to PPA
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SERIES="${{ matrix.series }}"
+          cd /tmp
+          dput ppa:hamidfzm/glyph glyph_${VERSION}-1~${SERIES}1_source.changes
+
+  publish-debian:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Install packaging tools
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev gpg
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download deb packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${VERSION}_amd64.deb" \
+            --pattern "Glyph_${VERSION}_arm64.deb"
+      - name: Clone apt-repo and update
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Import GPG key
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long 2>/dev/null | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+
+          # Clone the apt repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/glyph-md/apt-repo.git" /tmp/apt-repo
+          cd /tmp/apt-repo
+
+          # Set up pool directory
+          mkdir -p pool/main
+
+          # Copy new debs
+          cp "$GITHUB_WORKSPACE/Glyph_${VERSION}_amd64.deb" pool/main/
+          cp "$GITHUB_WORKSPACE/Glyph_${VERSION}_arm64.deb" pool/main/
+
+          # Generate Packages files
+          mkdir -p dists/stable/main/binary-amd64
+          mkdir -p dists/stable/main/binary-arm64
+
+          dpkg-scanpackages --arch amd64 pool/ > dists/stable/main/binary-amd64/Packages
+          gzip -k -f dists/stable/main/binary-amd64/Packages
+
+          dpkg-scanpackages --arch arm64 pool/ > dists/stable/main/binary-arm64/Packages
+          gzip -k -f dists/stable/main/binary-arm64/Packages
+
+          # Generate Release file
+          {
+            echo "Origin: Glyph"
+            echo "Label: Glyph"
+            echo "Suite: stable"
+            echo "Codename: stable"
+            echo "Architectures: amd64 arm64"
+            echo "Components: main"
+            echo "Description: Glyph apt repository"
+            echo "Date: $(date -Ru)"
+            echo "MD5Sum:"
+            for f in dists/stable/main/binary-*/Packages*; do
+              echo " $(md5sum "$f" | awk '{print $1}') $(wc -c < "$f") ${f#dists/stable/}"
+            done
+            echo "SHA256:"
+            for f in dists/stable/main/binary-*/Packages*; do
+              echo " $(sha256sum "$f" | awk '{print $1}') $(wc -c < "$f") ${f#dists/stable/}"
+            done
+          } > dists/stable/Release
+
+          # Sign the Release file
+          gpg --batch --yes --default-key "$GPG_KEY_ID" -abs -o dists/stable/Release.gpg dists/stable/Release
+          gpg --batch --yes --default-key "$GPG_KEY_ID" --clearsign -o dists/stable/InRelease dists/stable/Release
+
+          # Export public key
+          gpg --armor --export "$GPG_KEY_ID" > gpg.key
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || {
+            git commit -m "chore: update packages to $VERSION"
+            git push
+          }
+
+  publish-snap:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # The snap is built from the released .deb (see snap/snapcraft.yaml), so
+      # this job needs no toolchain. It is a no-op until the maintainer adds the
+      # SNAPCRAFT_STORE_CREDENTIALS secret (snapcraft export-login), so it never
+      # fails releases before the Snap Store account is set up.
+      - name: Check for store credentials
+        id: gate
+        env:
+          CREDS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [ -n "$CREDS" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No SNAPCRAFT_STORE_CREDENTIALS secret; skipping snap publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      # snapcraft.yaml discovers the latest release and pulls the .deb for the
+      # build architecture. This job runs after the release is published, so
+      # "latest" is the tag that triggered this run. (Host env vars are not
+      # forwarded into the snapcraft build instance, so the version can't be
+      # passed that way.)
+      - name: Set website from package.json (single source)
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          HOMEPAGE=$(jq -r .homepage package.json)
+          sed -i "s|^website: .*|website: $HOMEPAGE|" snap/snapcraft.yaml
+      - name: Build snap
+        if: steps.gate.outputs.enabled == 'true'
+        id: build
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+      - name: Publish snap to stable
+        if: steps.gate.outputs.enabled == 'true'
+        uses: snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40 # v1.2.0
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: stable
+
+  publish-dnf:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # The signed DNF repo lives in glyph-md/rpm-repo (GitHub Pages), mirroring
+      # the apt-repo. Skip cleanly until that repo exists, so a missing target
+      # never fails the release (gated like publish-snap, though this probes the
+      # repo via the API rather than checking a secret's presence). Note:
+      # TAP_GITHUB_TOKEN must have access to rpm-repo, otherwise this 404s and the
+      # job stays a silent no-op even once the repo is created.
+      - name: Check rpm-repo exists
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if gh api repos/glyph-md/rpm-repo >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No glyph-md/rpm-repo; skipping DNF publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install packaging tools
+        if: steps.gate.outputs.enabled == 'true'
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: sudo apt-get update && sudo apt-get install -y createrepo-c rpm gnupg
+      - name: Get version
+        if: steps.gate.outputs.enabled == 'true'
+        id: version
+        uses: ./.github/actions/get-version
+      - name: Download RPM packages
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph-${VERSION}-1.x86_64.rpm" \
+            --pattern "Glyph-${VERSION}-1.aarch64.rpm"
+      - name: Import GPG key
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long 2>/dev/null | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> "$GITHUB_ENV"
+          # Passphrase file for loopback signing (empty file is harmless for an
+          # unprotected key, which is what the apt-repo job also assumes).
+          printf '%s' "$GPG_PASSPHRASE" > /tmp/gpg-pass
+          # rpm --addsign shells out to gpg; force batch/loopback so it never
+          # blocks on a pinentry prompt in CI. rpm execs the macro's first
+          # token as a literal binary path (no PATH search), so it must be
+          # %{__gpg}; the bare "gpg" after it is argv[0], matching rpm's
+          # stock macro shape.
+          cat > "$HOME/.rpmmacros" <<EOF
+          %_gpg_name $GPG_KEY_ID
+          %__gpg /usr/bin/gpg
+          %__gpg_sign_cmd %{__gpg} gpg --batch --no-verbose --no-armor --pinentry-mode loopback --passphrase-file /tmp/gpg-pass --no-secmem-warning -u "%{_gpg_name}" --sign --detach-sign --output %{__signature_filename} %{__plaintext_filename}
+          EOF
+      - name: Clone rpm-repo, sign RPMs, and rebuild metadata
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/glyph-md/rpm-repo.git" /tmp/rpm-repo
+          cd /tmp/rpm-repo
+
+          # Flat repo at the Pages root: RPMs sit next to repodata/, matching the
+          # baseurl in dnf/glyph.repo. Copy in this release's packages (overwrite
+          # if re-running the same tag), then sign only those two files, not the
+          # whole history, so prior releases' RPMs are left untouched (mirrors how
+          # publish-debian only handles the current version's debs).
+          cp "$GITHUB_WORKSPACE/Glyph-${VERSION}-1.x86_64.rpm" .
+          cp "$GITHUB_WORKSPACE/Glyph-${VERSION}-1.aarch64.rpm" .
+          rpm --addsign "Glyph-${VERSION}-1.x86_64.rpm" "Glyph-${VERSION}-1.aarch64.rpm"
+
+          # Regenerate repodata over all versions (full rebuild is idempotent).
+          createrepo_c --revision "$VERSION" .
+
+          # repo_gpgcheck=1 verifies a detached signature of repomd.xml.
+          gpg --batch --yes --pinentry-mode loopback --passphrase-file /tmp/gpg-pass \
+            --default-key "$GPG_KEY_ID" --detach-sign --armor repodata/repomd.xml
+
+          # Ship the public key and the .repo drop-in at the root.
+          gpg --armor --export "$GPG_KEY_ID" > gpg.key
+          cp "$GITHUB_WORKSPACE/dnf/glyph.repo" glyph.repo
+
+          # Serve the RPMs and repodata as raw files: .nojekyll turns off the
+          # Pages Jekyll build, which otherwise fails on this non-site repo.
+          touch .nojekyll
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || {
+            git commit -m "chore: update packages to $VERSION"
+            git push
+          }
+
+  publish-flathub:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # The canonical Flatpak manifest lives in this repo (flatpak/). Flathub
+      # builds from its own app repo (flathub/com.hamidfzm.glyph), so each
+      # release we rewrite the version + per-arch sha256 in the manifest and
+      # push it (with the desktop + metainfo files) to that repo, whose
+      # buildbot then builds and publishes. No-op until FLATHUB_TOKEN (a PAT
+      # with push access to the Flathub app repo) is set, so it never fails a
+      # release before the Flathub submission is accepted.
+      - name: Check for Flathub token
+        id: gate
+        env:
+          TOKEN: ${{ secrets.FLATHUB_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No FLATHUB_TOKEN secret; skipping Flathub publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Get version
+        if: steps.gate.outputs.enabled == 'true'
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Download debs and compute sha256
+        if: steps.gate.outputs.enabled == 'true'
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "Glyph_${VERSION}_amd64.deb" \
+            --pattern "Glyph_${VERSION}_arm64.deb"
+          echo "amd64=$(sha256sum "Glyph_${VERSION}_amd64.deb" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "arm64=$(sha256sum "Glyph_${VERSION}_arm64.deb" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: Update manifest and push to the Flathub app repo
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FLATHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA_AMD64="${{ steps.sha.outputs.amd64 }}"
+          SHA_ARM64="${{ steps.sha.outputs.arm64 }}"
+
+          # Rewrite the version in both download URLs and the per-arch sha256.
+          # Each `url:` line is immediately followed by its `sha256:` line, so
+          # tag the arch on the url and replace the next sha256 accordingly.
+          awk -v v="$VERSION" -v a="$SHA_AMD64" -v r="$SHA_ARM64" '
+            /releases\/download\/.*_amd64\.deb/ { sub(/v[0-9][0-9.]*\/Glyph_[0-9][0-9.]*_/, "v" v "/Glyph_" v "_"); arch="amd64" }
+            /releases\/download\/.*_arm64\.deb/ { sub(/v[0-9][0-9.]*\/Glyph_[0-9][0-9.]*_/, "v" v "/Glyph_" v "_"); arch="arm64" }
+            /^[[:space:]]*sha256:/ {
+              if (arch == "amd64") { sub(/sha256:.*/, "sha256: " a); arch="" }
+              else if (arch == "arm64") { sub(/sha256:.*/, "sha256: " r); arch="" }
+            }
+            { print }
+          ' flatpak/com.hamidfzm.glyph.yml > /tmp/manifest.yml
+
+          # Stamp the metainfo release entry with this release; the committed
+          # file only carries the entry that was current when it last changed.
+          sed -i "s|<release version=\"[0-9.]*\" date=\"[0-9-]*\">|<release version=\"$VERSION\" date=\"$(date -u +%F)\">|; s|releases/tag/v[0-9.]*|releases/tag/v$VERSION|" flatpak/com.hamidfzm.glyph.metainfo.xml
+
+          # Single-source the homepage URL from package.json (falls back to the
+          # committed value if the field is absent).
+          HOMEPAGE=$(jq -r '.homepage // empty' package.json)
+          if [ -n "$HOMEPAGE" ]; then
+            sed -i "s|<url type=\"homepage\">.*</url>|<url type=\"homepage\">$HOMEPAGE</url>|" flatpak/com.hamidfzm.glyph.metainfo.xml
+          fi
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/flathub/com.hamidfzm.glyph.git" /tmp/flathub
+          cp /tmp/manifest.yml /tmp/flathub/com.hamidfzm.glyph.yml
+          cp flatpak/com.hamidfzm.glyph.desktop /tmp/flathub/
+          cp flatpak/com.hamidfzm.glyph.metainfo.xml /tmp/flathub/
+
+          cd /tmp/flathub
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || {
+            git commit -m "Update to $VERSION"
+            git push
+          }
+
+  publish-docker:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # ghcr.io push, authenticated with the built-in token, so this publish
+      # job needs no secret of its own.
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Get version
+        id: version
+        uses: ./.github/actions/get-version
+      # arm64 is emulated. The image only unpacks a published package, so
+      # there is nothing to cross-compile and one buildx run covers both.
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # `latest` tracks the semver tags on its own and stays put for a
+      # prerelease tag, so no manual gate is needed for it.
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: GLYPH_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: true

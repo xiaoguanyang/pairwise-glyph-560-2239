@@ -1,0 +1,70 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # NPM @tauri-apps/plugin-* must match Rust tauri-plugin-* minor versions; separate Dependabot PRs drift and break `tauri build`.
+      - dependency-name: "@tauri-apps/plugin-*"
+    groups:
+      # Group all @tauri-apps/* (api in prod, cli in dev) into one PR so the
+      # JS bindings and the build CLI stay version-aligned.
+      tauri:
+        patterns:
+          - "@tauri-apps/*"
+      dev-dependencies:
+        # Catches Biome, vitest, TypeScript, Tailwind, husky, lint-staged,
+        # and the rest of the tooling. Anything devDependencies sits here.
+        dependency-type: "development"
+        exclude-patterns:
+          - "@tauri-apps/*"
+      production-dependencies:
+        dependency-type: "production"
+        exclude-patterns:
+          - "@tauri-apps/*"
+
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      tauri-plugins:
+        patterns:
+          - "tauri-plugin-*"
+      all-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "tauri-plugin-*"
+
+  # Every `uses:` is pinned to a commit SHA (see CONTRIBUTING.md); Dependabot
+  # rewrites the SHA and the `# vX.Y.Z` comment together. "/" only covers
+  # .github/workflows, so the composite actions need their own entries.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      # init/autobuild/analyze are separate Dependabot dependencies but must run
+      # the same version; a lone bump fails with "Loaded a configuration file for
+      # version 'X', but running version 'Y'". Group them into one PR.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"

@@ -1,0 +1,159 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { CanvasNode } from "@/lib/canvas/types";
+import { renderInWorkspace } from "@/test/renderInWorkspace";
+import { CanvasNodeView } from "./CanvasNodeView";
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(() => Promise.resolve()) }));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset://${path}`,
+  invoke: vi.fn(() => Promise.resolve()),
+}));
+
+const base = { id: "n", x: 0, y: 0, width: 200, height: 80 };
+
+describe("CanvasNodeView", () => {
+  it("renders a text node's markdown heading", () => {
+    const node: CanvasNode = { ...base, type: "text", text: "# Hi" };
+    render(<CanvasNodeView node={node} />);
+    expect(screen.getByRole("heading", { name: "Hi" })).toBeInTheDocument();
+  });
+
+  it("opts text cards into the shared markdown-body styling", () => {
+    const node: CanvasNode = { ...base, type: "text", text: "styled" };
+    const { container } = render(<CanvasNodeView node={node} />);
+    expect(container.querySelector(".glyph-canvas-node-text.markdown-body")).toBeInTheDocument();
+  });
+
+  it("renders a text node's plain paragraph text", () => {
+    const node: CanvasNode = { ...base, type: "text", text: "hello" };
+    render(<CanvasNodeView node={node} />);
+    expect(screen.getByText("hello")).toBeInTheDocument();
+  });
+
+  it("renders a link node showing its url and opens it on click", () => {
+    const node: CanvasNode = { ...base, type: "link", url: "https://glyph.dev" };
+    render(<CanvasNodeView node={node} />);
+    const url = screen.getByText("https://glyph.dev");
+    expect(url).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button"));
+    expect(openUrl).toHaveBeenCalledWith("https://glyph.dev");
+  });
+
+  it("renders an image for an image file node", async () => {
+    const node: CanvasNode = { ...base, type: "file", file: "diagram.png" };
+    render(<CanvasNodeView node={node} canvasPath="/docs/board.canvas" />);
+    // Beside a loose canvas the image waits for the backend to mirror its path.
+    const img = await screen.findByRole("img", { name: "diagram.png" });
+    expect(img).toHaveAttribute("src", "asset:///docs/diagram.png");
+  });
+
+  it("renders a button for a non-image file node and calls onOpenFile on click", () => {
+    const onOpenFile = vi.fn();
+    const node: CanvasNode = { ...base, type: "file", file: "notes/todo.md" };
+    render(<CanvasNodeView node={node} onOpenFile={onOpenFile} />);
+    const button = screen.getByRole("button", { name: "todo.md" });
+    expect(button).toBeInTheDocument();
+    fireEvent.click(button);
+    expect(onOpenFile).toHaveBeenCalledWith("notes/todo.md");
+  });
+
+  it("uses the basename of a nested image path for the alt text", () => {
+    const node: CanvasNode = { ...base, type: "file", file: "assets\\sub\\pic.jpeg" };
+    render(<CanvasNodeView node={node} />);
+    expect(screen.getByRole("img", { name: "pic.jpeg" })).toBeInTheDocument();
+  });
+
+  it("does not throw clicking a non-image file node without an onOpenFile handler", () => {
+    const node: CanvasNode = { ...base, type: "file", file: "todo.md" };
+    render(<CanvasNodeView node={node} />);
+    const button = screen.getByRole("button", { name: "todo.md" });
+    expect(() => fireEvent.click(button)).not.toThrow();
+  });
+
+  it("renders a group node label with a color style when color is set", () => {
+    const node: CanvasNode = { ...base, type: "group", label: "Backlog", color: "1" };
+    render(<CanvasNodeView node={node} />);
+    const label = screen.getByText("Backlog");
+    expect(label).toBeInTheDocument();
+    // happy-dom resolves var() in computed style, so check the declared inline value
+    expect(label.style.color).toBe("var(--glyph-canvas-color-1, #fb464c)");
+  });
+
+  it("renders a group node label without a color style when color is unset", () => {
+    const node: CanvasNode = { ...base, type: "group", label: "Notes" };
+    render(<CanvasNodeView node={node} />);
+    const label = screen.getByText("Notes");
+    expect(label).toBeInTheDocument();
+    expect(label.getAttribute("style")).toBeFalsy();
+  });
+
+  it("renders an inert link card when not interactive (no navigation in editor)", () => {
+    vi.mocked(openUrl).mockClear();
+    const node: CanvasNode = { ...base, type: "link", url: "https://glyph.dev" };
+    render(<CanvasNodeView node={node} interactive={false} />);
+    const url = screen.getByText("https://glyph.dev");
+    expect(url).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    fireEvent.click(url);
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("renders an inert file card when not interactive", () => {
+    const onOpenFile = vi.fn();
+    const node: CanvasNode = { ...base, type: "file", file: "doc.md" };
+    render(<CanvasNodeView node={node} onOpenFile={onOpenFile} interactive={false} />);
+    fireEvent.click(screen.getByText("doc.md"));
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("opens a ../ markdown file node at its resolved absolute path", () => {
+    const onOpenFile = vi.fn();
+    const node: CanvasNode = { ...base, type: "file", file: "../notes/todo.md" };
+    renderInWorkspace(
+      <CanvasNodeView node={node} canvasPath="/ws/board/diagram.canvas" onOpenFile={onOpenFile} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "todo.md" }));
+    expect(onOpenFile).toHaveBeenCalledWith("/ws/notes/todo.md");
+  });
+
+  it("opens a ../ canvas file node as a canvas at its resolved path", () => {
+    const onOpenFile = vi.fn();
+    const node: CanvasNode = { ...base, type: "file", file: "../other.canvas" };
+    renderInWorkspace(
+      <CanvasNodeView node={node} canvasPath="/ws/a/board.canvas" onOpenFile={onOpenFile} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "other.canvas" }));
+    expect(onOpenFile).toHaveBeenCalledWith("/ws/other.canvas");
+  });
+
+  it("renders an inert card for a file node that escapes the workspace root", () => {
+    const onOpenFile = vi.fn();
+    const node: CanvasNode = { ...base, type: "file", file: "../../secret/todo.md" };
+    renderInWorkspace(
+      <CanvasNodeView node={node} canvasPath="/ws/board/diagram.canvas" onOpenFile={onOpenFile} />,
+    );
+    expect(screen.getByText("todo.md")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it("does not render an image whose path escapes the workspace root", () => {
+    const node: CanvasNode = { ...base, type: "file", file: "../../secret/pic.png" };
+    renderInWorkspace(<CanvasNodeView node={node} canvasPath="/ws/board/diagram.canvas" />);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByText("pic.png")).toBeInTheDocument();
+  });
+
+  it("refuses an unresolvable file node when a workspace root is set but the canvas path is unknown", () => {
+    const onOpenFile = vi.fn();
+    const node: CanvasNode = { ...base, type: "file", file: "../secret/todo.md" };
+    renderInWorkspace(<CanvasNodeView node={node} onOpenFile={onOpenFile} />);
+    expect(screen.getByText("todo.md")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+});

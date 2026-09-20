@@ -1,0 +1,211 @@
+import { invoke } from "@tauri-apps/api/core";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, type Mock } from "vitest";
+import { useZoomApi } from "@/contexts/ZoomContext";
+import { ZoomProvider } from "@/contexts/ZoomProvider";
+import { ImageViewer } from "./ImageViewer";
+
+function zoomLevel(container: HTMLElement): number {
+  return parseInt(container.querySelector(".image-viewer-zoom-level")?.textContent ?? "", 10);
+}
+
+describe("ImageViewer", () => {
+  it("renders a raster image through the asset protocol", () => {
+    const { container } = render(<ImageViewer filePath="/notes/photo.png" />);
+    const img = container.querySelector("img.image-viewer-img");
+    // convertFileSrc is mocked to asset://localhost/<path> in the test setup.
+    expect(img?.getAttribute("src")).toBe("asset://localhost//notes/photo.png");
+  });
+
+  it("renders an SVG inline from its content as a data URL", async () => {
+    (invoke as Mock).mockResolvedValueOnce('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const { container } = render(<ImageViewer filePath="/notes/diagram.svg" />);
+    await waitFor(() => {
+      const img = container.querySelector("img.image-viewer-img");
+      expect(img?.getAttribute("src")).toMatch(/^data:image\/svg\+xml,/);
+    });
+  });
+
+  it("falls back to the asset protocol when reading an SVG fails", async () => {
+    (invoke as Mock).mockRejectedValueOnce(new Error("read failed"));
+    const { container } = render(<ImageViewer filePath="/notes/broken.svg" />);
+    await waitFor(() => {
+      const img = container.querySelector("img.image-viewer-img");
+      expect(img?.getAttribute("src")).toBe("asset://localhost//notes/broken.svg");
+    });
+  });
+
+  it("ignores a late SVG read that resolves after unmount", async () => {
+    let resolveRead!: (svg: string) => void;
+    (invoke as Mock).mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+    const { unmount } = render(<ImageViewer filePath="/notes/late.svg" />);
+    unmount();
+    // The cleanup flag must suppress the setSrc on the unmounted component
+    // (no act warning / state-update-after-unmount).
+    resolveRead("<svg/>");
+    await Promise.resolve();
+  });
+
+  it("ignores a late SVG read that fails after unmount", async () => {
+    let rejectRead!: (err: Error) => void;
+    (invoke as Mock).mockReturnValueOnce(
+      new Promise<string>((_resolve, reject) => {
+        rejectRead = reject;
+      }),
+    );
+    const { unmount } = render(<ImageViewer filePath="/notes/late-fail.svg" />);
+    unmount();
+    rejectRead(new Error("read failed"));
+    await Promise.resolve();
+  });
+
+  it("exposes an image-viewer region", () => {
+    render(<ImageViewer filePath="/a/b/photo.png" />);
+    expect(screen.getByRole("region", { name: "Image viewer" })).toBeInTheDocument();
+  });
+
+  it("zooms in and out from the toolbar", () => {
+    render(<ImageViewer filePath="/a/b/photo.png" />);
+    expect(screen.getByText("100%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Zoom in (+)"));
+    expect(screen.getByText("125%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Zoom out (-)"));
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("resets to actual size", () => {
+    render(<ImageViewer filePath="/a/b/photo.png" />);
+    fireEvent.click(screen.getByLabelText("Zoom in (+)"));
+    fireEvent.click(screen.getByLabelText("Actual size (1)"));
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("lays out an image with intrinsic size and scales its width on zoom", () => {
+    const { container } = render(<ImageViewer filePath="/a/photo.png" />);
+    const img = container.querySelector("img.image-viewer-img") as HTMLImageElement;
+    // Mock a real intrinsic size (happy-dom reports 0 otherwise) to hit the pixel path.
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    fireEvent.load(img);
+
+    // Intrinsic branch: explicit pixel width, no object-fit contain.
+    const fitWidth = parseFloat(img.style.width);
+    expect(fitWidth).toBeGreaterThan(0);
+    expect(img.style.objectFit).toBe("");
+
+    fireEvent.click(screen.getByLabelText("Zoom in (+)"));
+    expect(parseFloat(img.style.width)).toBeCloseTo(fitWidth * 1.25);
+  });
+
+  it("lays out a viewBox-only SVG at its intrinsic size instead of the contain path", async () => {
+    (invoke as Mock).mockResolvedValueOnce('<svg viewBox="0 0 200 100"/>');
+    const { container } = render(<ImageViewer filePath="/a/chart.svg" />);
+    const img = container.querySelector("img.image-viewer-img") as HTMLImageElement;
+    await waitFor(() => expect(img.getAttribute("src")).toMatch(/^data:image\/svg\+xml,/));
+    // happy-dom reports naturalWidth/Height === 0; the parsed viewBox size takes over.
+    fireEvent.load(img);
+    expect(img.style.objectFit).toBe("");
+    expect(img.style.width).toMatch(/px$/);
+    expect(parseFloat(img.style.width)).toBeGreaterThan(0);
+  });
+
+  it("contains a dimensionless SVG (no intrinsic pixel size) and zooms via transform", async () => {
+    (invoke as Mock).mockResolvedValueOnce('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const { container } = render(<ImageViewer filePath="/a/icon.svg" />);
+    const img = container.querySelector("img.image-viewer-img") as HTMLImageElement;
+    // Wait for the async SVG read to settle into the data: src before loading.
+    await waitFor(() => {
+      expect(img.getAttribute("src")).toMatch(/^data:image\/svg\+xml,/);
+    });
+    // happy-dom reports naturalWidth/Height === 0, like an SVG with only a viewBox.
+    fireEvent.load(img);
+    expect(img.style.objectFit).toBe("contain");
+    expect(img.style.width).toBe("100%");
+    expect(img.style.transform).toBe("scale(1)");
+  });
+
+  it("recomputes the fit on window resize while fitted", () => {
+    const { container } = render(<ImageViewer filePath="/a/photo.png" />);
+    const img = container.querySelector("img.image-viewer-img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    fireEvent.load(img);
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("zooms with Ctrl or Cmd + wheel and ignores a plain wheel", () => {
+    const { container } = render(<ImageViewer filePath="/a/b/photo.png" />);
+    const stage = container.querySelector(".image-viewer-stage") as HTMLElement;
+    // happy-dom drops WheelEvent modifiers from its init, so set them directly.
+    const wheel = (modifiers: { ctrlKey?: boolean; metaKey?: boolean }, deltaY: number) =>
+      act(() => {
+        const event = new Event("wheel", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "ctrlKey", { value: modifiers.ctrlKey ?? false });
+        Object.defineProperty(event, "metaKey", { value: modifiers.metaKey ?? false });
+        Object.defineProperty(event, "deltaY", { value: deltaY });
+        stage.dispatchEvent(event);
+      });
+
+    wheel({}, -100);
+    expect(zoomLevel(container)).toBe(100);
+
+    wheel({ ctrlKey: true }, -100);
+    const afterCtrl = zoomLevel(container);
+    expect(afterCtrl).toBeGreaterThan(100);
+
+    // Cmd+wheel is the macOS equivalent; scrolling down zooms back out.
+    wheel({ metaKey: true }, 100);
+    expect(zoomLevel(container)).toBeLessThan(afterCtrl);
+  });
+
+  it("responds to the Zoom In/Out/Actual-Size commands", () => {
+    const ZoomButtons = () => {
+      const api = useZoomApi();
+      return (
+        <>
+          <button type="button" onClick={() => api?.actions.zoomIn()}>
+            cmd-zoom-in
+          </button>
+          <button type="button" onClick={() => api?.actions.zoomOut()}>
+            cmd-zoom-out
+          </button>
+          <button type="button" onClick={() => api?.actions.zoomReset()}>
+            cmd-actual-size
+          </button>
+        </>
+      );
+    };
+    const { container } = render(
+      <ZoomProvider>
+        <ImageViewer filePath="/a/b/photo.png" />
+        <ZoomButtons />
+      </ZoomProvider>,
+    );
+    act(() => screen.getByText("cmd-zoom-in").click());
+    expect(zoomLevel(container)).toBe(125);
+    act(() => screen.getByText("cmd-zoom-out").click());
+    expect(zoomLevel(container)).toBe(100);
+    act(() => screen.getByText("cmd-zoom-in").click());
+    act(() => screen.getByText("cmd-actual-size").click());
+    expect(zoomLevel(container)).toBe(100);
+  });
+
+  it("stops refitting on resize once the user has zoomed", () => {
+    const { container } = render(<ImageViewer filePath="/a/photo.png" />);
+    const img = container.querySelector("img.image-viewer-img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    fireEvent.load(img);
+    fireEvent.click(screen.getByLabelText("Zoom in (+)"));
+    const widthAfterZoom = img.style.width;
+    fireEvent(window, new Event("resize"));
+    expect(img.style.width).toBe(widthAfterZoom);
+  });
+});

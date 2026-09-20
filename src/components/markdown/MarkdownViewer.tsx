@@ -1,0 +1,125 @@
+import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
+import { SearchBar } from "@/components/layout/SearchBar";
+import { useSearch } from "@/hooks/useSearch";
+import { MarkdownContent } from "./MarkdownContent";
+
+interface MarkdownViewerProps {
+  content: string;
+  filePath?: string;
+  initialScrollTop?: number;
+  onScrollChange?: (scrollTop: number) => void;
+  searchOpen: boolean;
+  onSearchClose: () => void;
+  workspaceFiles?: string[];
+  onOpenWikilink?: (path: string, heading?: string) => void;
+  onOpenRelativeFile?: (path: string) => void;
+  onTaskToggle?: (line: number) => void;
+  /** Stamp `data-line` on top-level blocks, for split view scroll sync. */
+  sourceLines?: boolean;
+}
+
+export function MarkdownViewer({
+  content,
+  filePath,
+  initialScrollTop = 0,
+  onScrollChange,
+  searchOpen,
+  onSearchClose,
+  workspaceFiles,
+  onOpenWikilink,
+  onOpenRelativeFile,
+  onTaskToggle,
+  sourceLines,
+}: MarkdownViewerProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const { t } = useTranslation("common");
+  const search = useSearch({ containerRef: contentRef });
+
+  // MDX files render as plain markdown; JSX components are not evaluated
+  // (see #77). A per-file notice beats silently showing broken output.
+  const isMdx = filePath?.toLowerCase().endsWith(".mdx") ?? false;
+
+  // Restore scroll position on mount
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only — restore once when tab activates
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && initialScrollTop > 0) {
+      requestAnimationFrame(() => {
+        el.scrollTop = initialScrollTop;
+      });
+    }
+  }, []);
+
+  // Report scroll position changes to parent
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !onScrollChange) return;
+
+    const handler = () => {
+      onScrollChange(el.scrollTop);
+    };
+    el.addEventListener("scroll", handler, { passive: true });
+    return () => el.removeEventListener("scroll", handler);
+  }, [onScrollChange]);
+
+  const handleSearchClose = () => {
+    search.clear();
+    onSearchClose();
+  };
+
+  return (
+    <div className="flex-1 relative min-h-0 min-w-0">
+      {searchOpen && (
+        <SearchBar
+          query={search.query}
+          onQueryChange={search.setQuery}
+          matchCount={search.matchCount}
+          currentMatch={search.currentMatch}
+          onNext={search.nextMatch}
+          onPrev={search.prevMatch}
+          onClose={handleSearchClose}
+        />
+      )}
+      <div
+        ref={scrollRef}
+        // Split view resolves this scroller by attribute, as it does the
+        // editor's `.cm-scroller`, so neither pane needs a ref prop.
+        data-scroll-container=""
+        className="absolute inset-0 overflow-y-auto"
+        // Keep anchor targets a few pixels off the top edge when scrolled to
+        // via TOC / `#anchor`. Extra scroll room past the last heading lives
+        // on `.markdown-body` as `padding-bottom` so end-of-document targets
+        // can still scroll to the top of the viewport.
+        style={{ scrollPaddingTop: "16px" }}
+      >
+        {isMdx && (
+          <div
+            role="note"
+            data-print-hide="true"
+            className="mx-8 mt-4 px-3 py-2 rounded border border-[var(--color-border)] border-s-4 border-s-[var(--color-warning,#b45309)] bg-[var(--color-banner-bg)] text-sm text-[var(--color-text-secondary)] select-none"
+          >
+            {t("mdxNotice.body")}
+          </div>
+        )}
+        {/* dir="auto" resolves the document's base direction from its first
+            strong character, so a fully-RTL file lays out RTL (list markers,
+            blockquote borders, tables). Mixed-direction blocks are handled
+            per-element via `unicode-bidi: plaintext` in markdown.css. */}
+        <div ref={contentRef} className="markdown-body px-8 py-6" dir="auto">
+          <MarkdownContent
+            content={content}
+            filePath={filePath}
+            workspaceFiles={workspaceFiles}
+            onOpenWikilink={onOpenWikilink}
+            onOpenRelativeFile={onOpenRelativeFile}
+            onTaskToggle={onTaskToggle}
+            sourceLines={sourceLines}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}

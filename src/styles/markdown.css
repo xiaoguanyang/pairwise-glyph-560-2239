@@ -1,0 +1,721 @@
+.markdown-body {
+  /* Prose reads in the document's face; chrome stays on --glyph-font. */
+  font-family: var(--glyph-reading-font);
+  line-height: var(--glyph-line-height, 1.7);
+  font-size: var(--glyph-font-size, 16px);
+  color: var(--color-text-primary);
+  max-width: var(--glyph-content-width, 800px);
+  margin: 0 auto;
+  /* Extra scroll room at the end so headings near the bottom can be
+     scrolled to the top of the viewport when clicked from the outline. */
+  padding-bottom: 70vh;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+  scroll-margin-top: 16px;
+}
+
+.markdown-body h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.markdown-body h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.875em; }
+.markdown-body h6 { font-size: 0.85em; color: var(--color-text-secondary); }
+
+/* Hover-revealed anchor-copy button appended inside each heading. Hidden with
+   opacity (space stays reserved) so revealing it never shifts heading layout. */
+.markdown-body .heading-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  margin-left: 0.4em;
+  padding: 0;
+  vertical-align: middle;
+  border: none;
+  background: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.markdown-body .heading-anchor svg {
+  width: 1em;
+  height: 1em;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6):hover .heading-anchor,
+.markdown-body .heading-anchor:focus-visible {
+  opacity: 1;
+}
+
+.markdown-body .heading-anchor:hover {
+  color: var(--color-text-primary);
+}
+
+.markdown-body .heading-anchor.copied {
+  opacity: 1;
+  color: var(--color-accent);
+}
+
+.markdown-body p {
+  margin: 0 0 1em;
+}
+
+/* Bidirectional text. Each block resolves its own direction from its first
+   strong character, so an RTL paragraph in an LTR document (and vice versa)
+   renders in its natural direction, mirroring the AI chat behaviour in
+   ai-chat.css. The viewer container carries dir="auto" so a fully-RTL
+   document also flips the layout (list markers, blockquote borders, tables). */
+.markdown-body :is(p, li, h1, h2, h3, h4, h5, h6, th, td) {
+  unicode-bidi: plaintext;
+}
+
+/* Code and math are always left-to-right, even inside an RTL document. */
+.markdown-body pre,
+.markdown-body code,
+.markdown-body .katex {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.markdown-body a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body a.wikilink {
+  color: var(--color-accent);
+  text-decoration: none;
+  border-bottom: 1px dashed
+    color-mix(in srgb, var(--color-accent) 60%, transparent);
+}
+
+.markdown-body a.wikilink:hover {
+  text-decoration: none;
+  border-bottom-style: solid;
+}
+
+.markdown-body a.wikilink--broken {
+  color: var(--color-text-tertiary);
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--color-text-tertiary) 50%,
+    transparent
+  );
+  cursor: not-allowed;
+}
+
+.markdown-body a.wikilink--broken:hover {
+  border-bottom-style: dashed;
+}
+
+/* Note embeds: `![[note]]` renders the target inline in a bordered container. */
+.markdown-body .markdown-embed {
+  position: relative;
+  margin: 1em 0;
+  padding: 0.25em 1em;
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  background: var(--color-surface-secondary);
+}
+
+.markdown-body .markdown-embed__body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body .markdown-embed__body > :last-child {
+  margin-bottom: 0;
+}
+
+/* Icon-only affordance that jumps to the embedded note's source. */
+.markdown-body .markdown-embed__source {
+  position: absolute;
+  top: 0.5em;
+  inset-inline-end: 0.5em;
+  display: inline-flex;
+  padding: 0.25em;
+  border-radius: var(--glyph-radius-sm);
+  color: var(--color-text-tertiary);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+
+.markdown-body .markdown-embed:hover .markdown-embed__source {
+  opacity: 1;
+}
+
+.markdown-body .markdown-embed__source:hover {
+  color: var(--color-accent);
+  background: var(--color-surface);
+}
+
+.markdown-body .markdown-embed__status {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.markdown-body .markdown-embed--broken {
+  color: var(--color-text-tertiary);
+  border-style: dashed;
+  font-style: italic;
+}
+
+.markdown-body strong { font-weight: 600; }
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: var(--glyph-radius);
+  box-shadow: var(--glyph-shadow);
+}
+
+.markdown-body video {
+  max-width: 100%;
+  display: block;
+  margin: 0 0 1em;
+  border-radius: var(--glyph-radius);
+  box-shadow: var(--glyph-shadow);
+}
+
+/* An audio player is a fixed-height control strip: it stretches rather than
+   scaling, and carries no frame of its own. */
+.markdown-body audio {
+  width: 100%;
+  display: block;
+  margin: 0 0 1em;
+}
+
+/* The print stand-in for a player, revealed only by print.css. */
+.markdown-media-print {
+  display: none;
+}
+
+.markdown-body blockquote {
+  margin: 0 0 1em;
+  padding: 0.5em 1em;
+  border-inline-start: 4px solid var(--color-accent);
+  background: var(--color-surface-secondary);
+  /* Logical corners: square against the accent border, rounded on the far
+     side, in both LTR and RTL. */
+  border-radius: 0;
+  border-start-end-radius: var(--glyph-radius-sm);
+  border-end-end-radius: var(--glyph-radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.markdown-body blockquote p:last-child { margin-bottom: 0; }
+
+.markdown-body .markdown-alert {
+  margin: 0 0 1em;
+  padding: 0.5em 1em;
+  border-inline-start: 4px solid var(--alert-accent, var(--color-accent));
+  background: color-mix(in srgb, var(--alert-accent, var(--color-accent)) 8%, transparent);
+  border-radius: 0;
+  border-start-end-radius: var(--glyph-radius-sm);
+  border-end-end-radius: var(--glyph-radius-sm);
+  color: var(--color-text-primary);
+}
+
+.markdown-body .markdown-alert > :last-child { margin-bottom: 0; }
+
+.markdown-body .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+  color: var(--alert-accent, var(--color-accent));
+  line-height: 1;
+}
+
+.markdown-body .markdown-alert-title svg {
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+}
+
+.markdown-body .markdown-alert-note      { --alert-accent: var(--color-alert-note); }
+.markdown-body .markdown-alert-tip       { --alert-accent: var(--color-alert-tip); }
+.markdown-body .markdown-alert-important { --alert-accent: var(--color-alert-important); }
+.markdown-body .markdown-alert-warning   { --alert-accent: var(--color-alert-warning); }
+.markdown-body .markdown-alert-caution   { --alert-accent: var(--color-alert-caution); }
+
+/* Tailwind's preflight resets list-style to none on ul/ol, so restore the
+ * native markers that a markdown reader expects. */
+.markdown-body ul {
+  list-style: disc;
+  margin: 0 0 1em;
+  padding-inline-start: 2em;
+}
+
+.markdown-body ol {
+  list-style: decimal;
+  margin: 0 0 1em;
+  padding-inline-start: 2em;
+}
+
+/* Nested unordered lists cycle marker shapes like a browser default. */
+.markdown-body ul ul { list-style: circle; }
+.markdown-body ul ul ul { list-style: square; }
+
+.markdown-body li { margin: 0.25em 0; }
+
+/* GFM task lists. Tailwind's preflight strips the native checkbox chrome,
+ * so re-assert appearance + a visible frame so they look like GitHub's
+ * (square, accent fill when checked). The list itself loses its bullets to
+ * match the GFM rendering convention. */
+.markdown-body ul.contains-task-list {
+  list-style: none;
+  padding-inline-start: 0.5em;
+}
+
+.markdown-body ul.contains-task-list ul,
+.markdown-body ul.contains-task-list ol {
+  padding-inline-start: 1.5em;
+}
+
+.markdown-body li.task-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+}
+
+.markdown-body li.task-list-item > input[type="checkbox"],
+.markdown-body li input[type="checkbox"] {
+  appearance: auto;
+  -webkit-appearance: checkbox;
+  accent-color: var(--color-accent);
+  width: 1em;
+  height: 1em;
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.markdown-body li input[type="checkbox"]:disabled {
+  cursor: default;
+}
+
+.markdown-body code {
+  font-family: var(--glyph-code-font, "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono", monospace);
+  font-size: 0.875em;
+  padding: 0.2em 0.4em;
+  background: var(--color-surface-secondary);
+  border-radius: var(--glyph-radius-sm);
+}
+
+.markdown-body .code-block-wrapper {
+  position: relative;
+  margin: 0 0 1em;
+}
+
+.markdown-body .code-block-wrapper pre {
+  margin: 0;
+}
+
+.markdown-body .code-copy-button {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius-sm);
+  background: var(--color-surface-secondary);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+  z-index: 1;
+}
+
+.markdown-body .code-block-wrapper:hover .code-copy-button,
+.markdown-body .code-copy-button:focus-visible {
+  opacity: 1;
+}
+
+.markdown-body .code-copy-button:hover {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.markdown-body .code-copy-button.copied {
+  opacity: 1;
+  color: var(--color-accent);
+}
+
+.markdown-body pre {
+  margin: 0 0 1em;
+  padding: 1em;
+  overflow-x: auto;
+  background: var(--color-surface-secondary);
+  border-radius: var(--glyph-radius);
+  border: 1px solid var(--color-border);
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+
+/* KaTeX math */
+.markdown-body .katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown-body .katex {
+  color: var(--color-text-primary);
+}
+
+/* Mermaid diagrams */
+.markdown-body .mermaid-diagram {
+  margin: 0 0 1em;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.markdown-body .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Click-to-zoom affordance when a lightbox provider is in scope. */
+.markdown-body .mermaid-diagram[role="button"],
+.markdown-body .d2-diagram[role="button"] {
+  cursor: zoom-in;
+}
+
+.markdown-body .mermaid-error .mermaid-error-label {
+  font-size: 0.8em;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.5em;
+}
+
+/* D2 diagrams */
+.markdown-body .d2-diagram {
+  margin: 0 0 1em;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.markdown-body .d2-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-body .d2-error .d2-error-label {
+  font-size: 0.8em;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.5em;
+}
+
+/* The wrapper scrolls, not the page. The table sizes to its content so columns
+   keep their width instead of being crushed, but still fills the measure when
+   it is narrow enough. */
+.markdown-body .markdown-table-wrapper {
+  overflow-x: auto;
+  margin: 0 0 1em;
+  overscroll-behavior-x: contain;
+}
+
+.markdown-body .markdown-table-wrapper:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.markdown-body .markdown-table-wrapper > table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+}
+
+.markdown-body table {
+  width: 100%;
+  margin: 0 0 1em;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 0.5em 1em;
+  border: 1px solid var(--color-border);
+  text-align: start;
+}
+
+.markdown-body th {
+  font-weight: 600;
+  background: var(--color-surface-secondary);
+}
+
+.markdown-body tr:nth-child(even) {
+  background: var(--color-surface-secondary);
+}
+
+/* CSV/TSV preview tables */
+.markdown-body .csv-table-wrapper {
+  margin: 0 0 1em;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  background: var(--color-surface-secondary);
+}
+
+.markdown-body .csv-table {
+  margin: 0;
+  border: none;
+}
+
+.markdown-body .csv-table th:first-child,
+.markdown-body .csv-table td:first-child {
+  border-inline-start: none;
+}
+
+.markdown-body .csv-table th:last-child,
+.markdown-body .csv-table td:last-child {
+  border-inline-end: none;
+}
+
+.markdown-body .csv-table tr:first-child th {
+  border-top: none;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 2em 0;
+}
+
+/* Footnotes */
+.markdown-body .footnotes {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.875em;
+  color: var(--color-text-secondary);
+}
+
+.markdown-body .footnotes ol {
+  padding-inline-start: 1.5em;
+}
+
+.markdown-body .footnotes li {
+  margin: 0.5em 0;
+}
+
+.markdown-body .footnotes li p {
+  margin: 0.25em 0;
+}
+
+.markdown-body [data-footnote-ref] {
+  color: var(--color-accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+/* Match GitHub: footnote refs render as `[1]` rather than a bare `1`. */
+.markdown-body [data-footnote-ref]::before {
+  content: "[";
+}
+
+.markdown-body [data-footnote-ref]::after {
+  content: "]";
+}
+
+.markdown-body [data-footnote-backref] {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.markdown-body [data-footnote-backref]:hover {
+  color: var(--color-accent);
+}
+
+.markdown-body .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.markdown-body kbd {
+  display: inline-block;
+  padding: 0.15em 0.4em;
+  font-family: var(--glyph-code-font, ui-monospace, monospace);
+  font-size: 0.85em;
+  line-height: 1;
+  color: var(--color-text-primary);
+  background: var(--color-surface-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  box-shadow: inset 0 -1px 0 var(--color-border);
+  vertical-align: middle;
+}
+
+.markdown-body details {
+  margin: 0 0 1em;
+  padding: 0.5em 0.75em;
+  background: var(--color-surface-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.markdown-body details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: revert;
+}
+
+.markdown-body details[open] > summary {
+  margin-bottom: 0.5em;
+}
+
+.markdown-body details > summary::marker {
+  color: var(--color-text-secondary);
+}
+
+.markdown-body sub,
+.markdown-body sup {
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+/* Frontmatter metadata block — bordered key/value table that visually sits
+ * apart from the body. Tag chips derive a per-tag hue from a hash of the tag
+ * name (see src/lib/tagColor.ts) so the same tag is always the same colour. */
+.markdown-body .frontmatter-table {
+  width: auto;
+  margin: 0 0 2em;
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  overflow: hidden;
+  background: var(--color-surface-secondary);
+  font-size: 0.9em;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.markdown-body .frontmatter-table th,
+.markdown-body .frontmatter-table td {
+  padding: 0.45em 0.9em;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  text-align: start;
+  vertical-align: middle;
+  background: none;
+}
+
+.markdown-body .frontmatter-table tr:last-child > th,
+.markdown-body .frontmatter-table tr:last-child > td {
+  border-bottom: none;
+}
+
+.markdown-body .frontmatter-table tr:nth-child(even) {
+  background: none;
+}
+
+.markdown-body .frontmatter-table th {
+  width: 1%;
+  white-space: nowrap;
+  font-family: var(--glyph-code-font, ui-monospace, monospace);
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
+  border-inline-end: 1px solid var(--color-border);
+}
+
+.markdown-body .frontmatter-table td {
+  color: var(--color-text-primary);
+}
+
+.markdown-body .frontmatter-value-title {
+  font-weight: 600;
+  font-size: 1.05em;
+}
+
+.markdown-body .frontmatter-cell-icon {
+  margin-inline-end: 0.45em;
+  vertical-align: -0.15em;
+  opacity: 0.6;
+}
+
+.markdown-body .frontmatter-tags {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em;
+}
+
+.markdown-body .frontmatter-tag {
+  --tag-color: hsl(var(--tag-h, 220) 65% 42%);
+  --tag-bg: hsl(var(--tag-h, 220) 70% 96%);
+  --tag-border: hsl(var(--tag-h, 220) 55% 86%);
+  margin: 0;
+  padding: 0.15em 0.65em;
+  font-size: 0.85em;
+  font-weight: 500;
+  background: var(--tag-bg);
+  color: var(--tag-color);
+  border: 1px solid var(--tag-border);
+  border-radius: 999px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.markdown-body .frontmatter-tag:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--tag-color) 30%, transparent);
+}
+
+.markdown-body .frontmatter-tag-hash {
+  opacity: 0.55;
+  margin-inline-end: 0.05em;
+}
+
+.dark .markdown-body .frontmatter-tag {
+  --tag-color: hsl(var(--tag-h, 220) 65% 78%);
+  --tag-bg: hsl(var(--tag-h, 220) 35% 17%);
+  --tag-border: hsl(var(--tag-h, 220) 35% 28%);
+}

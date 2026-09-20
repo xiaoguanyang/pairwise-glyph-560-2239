@@ -1,0 +1,391 @@
+import { renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
+import { PluginsContext, type PluginsContextValue } from "@/contexts/PluginsContext";
+import { createRegistry } from "@/lib/plugins/registry";
+import type {
+  CommandContribution,
+  ExporterContribution,
+  FencedRendererContribution,
+  MarkdownPlugin,
+  SettingsPanelContribution,
+  SidebarPanelContribution,
+  SiteThemeContribution,
+  StatusBarItemContribution,
+  StyleContribution,
+} from "@/lib/plugins/types";
+import { type AppActions, useAppCommands } from "./useAppCommands";
+
+function makeActions(over: Partial<AppActions> = {}): AppActions {
+  return {
+    newDocument: vi.fn(),
+    openFile: vi.fn(),
+    openFolder: vi.fn(),
+    newWorkspace: vi.fn(),
+    openGraph: vi.fn(),
+    save: vi.fn(),
+    toggleAutoSave: vi.fn(),
+    closeTab: vi.fn(),
+    closeWorkspace: vi.fn(),
+    toggleFilesSidebar: vi.fn(),
+    toggleOutlineSidebar: vi.fn(),
+    resetView: vi.fn(),
+    openSettings: vi.fn(),
+    openSyncSettings: vi.fn(),
+    find: vi.fn(),
+    searchWorkspace: vi.fn(),
+    toggleEdit: vi.fn(),
+    print: vi.fn(),
+    exportHtml: vi.fn(),
+    exportDocx: vi.fn(),
+    exportEpub: vi.fn(),
+    exportPdf: vi.fn(),
+    exportWebsite: vi.fn(),
+    workspaceSettings: vi.fn(),
+    zoomIn: vi.fn(),
+    zoomOut: vi.fn(),
+    zoomReset: vi.fn(),
+    aiAction: vi.fn(),
+    aiChat: vi.fn(),
+    readAloud: vi.fn(),
+    documentation: vi.fn(),
+    releaseNotes: vi.fn(),
+    reportIssue: vi.fn(),
+    openWorkspaceFile: vi.fn(),
+    managePlugins: vi.fn(),
+    runPluginExporter: vi.fn(),
+    navigateBack: vi.fn(),
+    navigateForward: vi.fn(),
+    ...over,
+  };
+}
+
+describe("useAppCommands", () => {
+  it("emits app-level commands even with no workspace or headings", () => {
+    const actions = makeActions();
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions,
+      }),
+    );
+    const titles = result.current.map((c) => c.title);
+    expect(titles).toContain("Open File…");
+    expect(titles).toContain("Settings…");
+    expect(result.current.every((c) => c.section === "Commands")).toBe(true);
+  });
+
+  it("emits one Files command per workspace file when a workspace is open", () => {
+    const actions = makeActions();
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: true,
+        workspaceFiles: ["/workspace/a.md", "/workspace/sub/b.md"],
+        tocEntries: [],
+        actions,
+      }),
+    );
+    const files = result.current.filter((c) => c.section === "Files");
+    expect(files.map((f) => f.title)).toEqual(["a.md", "b.md"]);
+    files[0].run();
+    expect(actions.openWorkspaceFile).toHaveBeenCalledWith("/workspace/a.md");
+  });
+
+  it("omits Files commands when there's no workspace", () => {
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: ["/anywhere/note.md"],
+        tocEntries: [],
+        actions: makeActions(),
+      }),
+    );
+    expect(result.current.some((c) => c.section === "Files")).toBe(false);
+  });
+
+  it("offers the website export only when a workspace is open", () => {
+    const actions = makeActions();
+    const open = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: true,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions,
+      }),
+    );
+    const cmd = open.result.current.find((c) => c.id === "cmd:exportWebsite");
+    expect(cmd?.title).toBe("Export Workspace as Website…");
+    cmd?.run();
+    expect(actions.exportWebsite).toHaveBeenCalledOnce();
+
+    const closed = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions: makeActions(),
+      }),
+    );
+    expect(closed.result.current.some((c) => c.id === "cmd:exportWebsite")).toBe(false);
+  });
+
+  it("offers the workspace search only when a workspace is open", () => {
+    const actions = makeActions();
+    const open = renderHook(() =>
+      useAppCommands({ workspaceOpen: true, workspaceFiles: [], tocEntries: [], actions }),
+    );
+    const cmd = open.result.current.find((c) => c.id === "cmd:searchWorkspace");
+    expect(cmd?.title).toBe("Search in Workspace");
+    cmd?.run();
+    expect(actions.searchWorkspace).toHaveBeenCalledOnce();
+
+    const closed = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions: makeActions(),
+      }),
+    );
+    expect(closed.result.current.some((c) => c.id === "cmd:searchWorkspace")).toBe(false);
+  });
+
+  it("emits a Heading command per TOC entry", () => {
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [
+          { id: "intro", text: "Introduction", level: 1 },
+          { id: "details", text: "Details", level: 2 },
+        ],
+        actions: makeActions(),
+      }),
+    );
+    const headings = result.current.filter((c) => c.section === "Headings");
+    expect(headings.map((h) => h.title)).toEqual(["Introduction", "Details"]);
+    expect(headings.map((h) => h.subtitle)).toEqual(["H1", "H2"]);
+  });
+
+  it("offers 'Cloud Sync…' only with a workspace open", () => {
+    // It opens Workspace Settings, which needs a folder, so it is gated the
+    // same way as the "Workspace Settings…" entry beside it.
+    const withoutWorkspace = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions: makeActions(),
+      }),
+    );
+    expect(withoutWorkspace.result.current.map((c) => c.title)).not.toContain("Cloud Sync…");
+
+    const withWorkspace = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: true,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions: makeActions(),
+      }),
+    );
+    expect(withWorkspace.result.current.map((c) => c.title)).toContain("Cloud Sync…");
+  });
+
+  it("each app command's run invokes the matching action", () => {
+    const actions = makeActions();
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [],
+        actions,
+      }),
+    );
+    const find = (title: string) => result.current.find((c) => c.title === title)!;
+    find("Open File…").run();
+    find("Open Folder…").run();
+    find("Close Tab").run();
+    find("Toggle Files Sidebar").run();
+    find("Toggle Outline Sidebar").run();
+    find("Reset View").run();
+    find("Settings…").run();
+    find("Find in Document").run();
+    find("Toggle Edit Mode").run();
+    find("Open Graph").run();
+    find("Print…").run();
+    find("Zoom In").run();
+    find("Zoom Out").run();
+    find("Reset Zoom").run();
+    find("Read Aloud").run();
+    find("Go Back").run();
+    find("Go Forward").run();
+    expect(actions.openFile).toHaveBeenCalledOnce();
+    expect(actions.navigateBack).toHaveBeenCalledOnce();
+    expect(actions.navigateForward).toHaveBeenCalledOnce();
+    expect(actions.openFolder).toHaveBeenCalledOnce();
+    expect(actions.closeTab).toHaveBeenCalledOnce();
+    expect(actions.toggleFilesSidebar).toHaveBeenCalledOnce();
+    expect(actions.toggleOutlineSidebar).toHaveBeenCalledOnce();
+    expect(actions.resetView).toHaveBeenCalledOnce();
+    expect(actions.openSettings).toHaveBeenCalledOnce();
+    expect(actions.find).toHaveBeenCalledOnce();
+    expect(actions.toggleEdit).toHaveBeenCalledOnce();
+    expect(actions.openGraph).toHaveBeenCalledOnce();
+    expect(actions.print).toHaveBeenCalledOnce();
+    expect(actions.zoomIn).toHaveBeenCalledOnce();
+    expect(actions.zoomOut).toHaveBeenCalledOnce();
+    expect(actions.zoomReset).toHaveBeenCalledOnce();
+    expect(actions.readAloud).toHaveBeenCalledOnce();
+  });
+
+  it("heading command's run scrolls to the entry's id", () => {
+    const target = document.createElement("h2");
+    target.id = "intro-heading";
+    document.body.appendChild(target);
+    const scrollIntoView = vi.fn();
+    target.scrollIntoView = scrollIntoView;
+
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: false,
+        workspaceFiles: [],
+        tocEntries: [{ id: "intro-heading", text: "Intro", level: 2 }],
+        actions: makeActions(),
+      }),
+    );
+    const heading = result.current.find((c) => c.section === "Headings")!;
+    heading.run();
+    expect(scrollIntoView).toHaveBeenCalled();
+    document.body.removeChild(target);
+  });
+
+  it("file titles fall back to the full path when there are no separators", () => {
+    const { result } = renderHook(() =>
+      useAppCommands({
+        workspaceOpen: true,
+        workspaceFiles: ["loose"],
+        tocEntries: [],
+        actions: makeActions(),
+      }),
+    );
+    const file = result.current.find((c) => c.section === "Files")!;
+    expect(file.title).toBe("loose");
+  });
+
+  it("surfaces commands contributed by loaded plugins", () => {
+    const commands = createRegistry<CommandContribution>();
+    const run = vi.fn();
+    commands.register({ id: "demo.greet", title: "Greet", run });
+    const value: PluginsContextValue = {
+      commands,
+      statusBarItems: createRegistry<StatusBarItemContribution>(),
+      remarkPlugins: createRegistry<MarkdownPlugin>(),
+      rehypePlugins: createRegistry<MarkdownPlugin>(),
+      fencedRenderers: createRegistry<FencedRendererContribution>(),
+      sidebarPanels: createRegistry<SidebarPanelContribution>(),
+      settingsPanels: createRegistry<SettingsPanelContribution>(),
+      styles: createRegistry<StyleContribution>(),
+      exporters: createRegistry<ExporterContribution>(),
+      installed: [],
+      disabled: [],
+      loaded: [],
+      registry: [],
+      updates: [],
+      installFromFolder: vi.fn(async () => {}),
+      installFromRegistry: vi.fn(async () => {}),
+      setEnabled: vi.fn(async () => {}),
+      uninstall: vi.fn(async () => {}),
+      setWorkspaceRoot: vi.fn(),
+      siteThemes: createRegistry<SiteThemeContribution>(),
+      initialLoadDone: true,
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(PluginsContext.Provider, { value }, children);
+
+    const { result } = renderHook(
+      () =>
+        useAppCommands({
+          workspaceOpen: false,
+          workspaceFiles: [],
+          tocEntries: [],
+          actions: makeActions(),
+        }),
+      { wrapper },
+    );
+
+    const greet = result.current.find((c) => c.id === "plugin:demo.greet")!;
+    expect(greet.title).toBe("Greet");
+    greet.run();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces plugin exporters as palette commands", () => {
+    const exporters = createRegistry<ExporterContribution>();
+    const slides: ExporterContribution = {
+      id: "x.slides",
+      label: "Slides",
+      extension: "html",
+      build: async () => "out",
+    };
+    exporters.register(slides);
+    const value: PluginsContextValue = {
+      commands: createRegistry<CommandContribution>(),
+      statusBarItems: createRegistry<StatusBarItemContribution>(),
+      remarkPlugins: createRegistry<MarkdownPlugin>(),
+      rehypePlugins: createRegistry<MarkdownPlugin>(),
+      fencedRenderers: createRegistry<FencedRendererContribution>(),
+      sidebarPanels: createRegistry<SidebarPanelContribution>(),
+      settingsPanels: createRegistry<SettingsPanelContribution>(),
+      styles: createRegistry<StyleContribution>(),
+      exporters,
+      siteThemes: createRegistry<SiteThemeContribution>(),
+      installed: [],
+      disabled: [],
+      loaded: [],
+      registry: [],
+      updates: [],
+      installFromFolder: vi.fn(async () => {}),
+      installFromRegistry: vi.fn(async () => {}),
+      setEnabled: vi.fn(async () => {}),
+      uninstall: vi.fn(async () => {}),
+      setWorkspaceRoot: vi.fn(),
+      initialLoadDone: true,
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(PluginsContext.Provider, { value }, children);
+    const actions = makeActions();
+
+    const { result } = renderHook(
+      () => useAppCommands({ workspaceOpen: false, workspaceFiles: [], tocEntries: [], actions }),
+      { wrapper },
+    );
+
+    const cmd = result.current.find((c) => c.id === "plugin-export:x.slides")!;
+    expect(cmd.title).toContain("Slides");
+    cmd.run();
+    expect(actions.runPluginExporter).toHaveBeenCalledWith(slides);
+  });
+
+  it("gives navigation and view commands a palette icon", () => {
+    const actions = makeActions();
+    const { result } = renderHook(() =>
+      useAppCommands({ workspaceOpen: false, workspaceFiles: [], tocEntries: [], actions }),
+    );
+    for (const id of ["cmd:openFile", "cmd:openGraph", "cmd:zoomIn", "cmd:exportPdf"]) {
+      expect(result.current.find((c) => c.id === id)?.icon).toBeTypeOf("function");
+    }
+  });
+
+  it("includes a Manage Plugins command", () => {
+    const actions = makeActions();
+    const { result } = renderHook(() =>
+      useAppCommands({ workspaceOpen: false, workspaceFiles: [], tocEntries: [], actions }),
+    );
+    const manage = result.current.find((c) => c.id === "cmd:managePlugins")!;
+    expect(manage).toBeTruthy();
+    manage.run();
+    expect(actions.managePlugins).toHaveBeenCalledOnce();
+  });
+});

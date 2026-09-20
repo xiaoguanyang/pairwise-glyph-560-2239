@@ -1,0 +1,20 @@
+Source: glyph
+Section: text
+Priority: optional
+Maintainer: hamidfzm <hamidfzm@users.noreply.github.com>
+# The binary is prebuilt, but dh_shlibdeps still has to resolve every library
+# it links against to fill ${shlibs:Depends}, and it can only do that for
+# libraries installed in the build chroot. libwebkit2gtk-4.1-0 pulls in
+# javascriptcoregtk, soup3, gtk3, glib, cairo and gdk-pixbuf transitively.
+Build-Depends: debhelper-compat (= 13), libwebkit2gtk-4.1-0, libgtk-3-0
+Standards-Version: 4.6.0
+Homepage: {{HOMEPAGE}}
+
+Package: glyph
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, libwebkit2gtk-4.1-0, libgtk-3-0
+Description: Cross-platform markdown viewer
+ A modern markdown viewer and editor with GFM support, syntax highlighting,
+ Mermaid and D2 diagrams, live file watching, table of contents sidebar,
+ cloud sync, JavaScript plugins, and platform-native styling.
+ Built with Tauri v2, React 19, and TypeScript.

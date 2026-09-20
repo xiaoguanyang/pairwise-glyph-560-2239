@@ -1,0 +1,379 @@
+{
+  "modal": {
+    "title": "Ajustes",
+    "reset": "Restablecer valores predeterminados",
+    "changesApply": "Los cambios se aplican de inmediato",
+    "tabs": {
+      "appearance": "Apariencia",
+      "layout": "Diseño",
+      "behavior": "Comportamiento",
+      "editor": "Editor",
+      "hotkeys": "Atajos",
+      "ai": "IA",
+      "print": "Impresión",
+      "privacy": "Privacidad",
+      "markdown": "Markdown",
+      "plugins": "Complementos"
+    },
+    "close": "Cerrar"
+  },
+  "language": {
+    "sectionTitle": "Idioma",
+    "label": "Idioma de la interfaz",
+    "system": "Sistema"
+  },
+  "appearance": {
+    "theme": {
+      "title": "Tema",
+      "label": "Tema de color",
+      "system": "Sistema",
+      "light": "Claro",
+      "dark": "Oscuro"
+    },
+    "typography": {
+      "title": "Tipografía"
+    },
+    "fontFamily": {
+      "label": "Fuente del documento",
+      "system": "Predeterminada",
+      "serif": "Serif",
+      "sans": "Sans-serif",
+      "mono": "Monoespaciada",
+      "custom": "Personalizada"
+    },
+    "customFont": {
+      "label": "Nombre de fuente personalizada",
+      "placeholder": "p. ej. Inter, Lora"
+    },
+    "fontSize": {
+      "label": "Tamaño de fuente"
+    },
+    "lineHeight": {
+      "label": "Altura de línea",
+      "compact": "Compacta",
+      "normal": "Normal",
+      "relaxed": "Amplia"
+    },
+    "contentWidth": {
+      "label": "Ancho del contenido",
+      "narrow": "Estrecho",
+      "medium": "Medio",
+      "wide": "Ancho",
+      "full": "Completo"
+    },
+    "code": {
+      "title": "Código"
+    },
+    "codeFont": {
+      "label": "Fuente del código",
+      "placeholder": "Predeterminada (SF Mono, Fira Code…)"
+    },
+    "codeTheme": {
+      "label": "Tema del código",
+      "glyph": "Glyph (predeterminado)",
+      "github": "GitHub",
+      "monokai": "Monokai",
+      "nord": "Nord",
+      "solarizedLight": "Solarized Light",
+      "solarizedDark": "Solarized Dark"
+    }
+  },
+  "layout": {
+    "title": "Barras laterales",
+    "showFiles": {
+      "label": "Mostrar barra de archivos",
+      "description": "Árbol de archivos del espacio de trabajo (solo en pestañas de carpeta). Muestra u oculta con <kbd>Cmd/Ctrl+B</kbd>."
+    },
+    "showOutline": {
+      "label": "Mostrar barra de esquema",
+      "description": "Tabla de contenidos del documento. Muestra u oculta con <kbd>Cmd/Ctrl+\\</kbd>."
+    },
+    "sidebarLayout": {
+      "label": "Diseño de la barra lateral",
+      "description": "Solo en pestañas de carpeta. <b>Dividido</b>: archivos y esquema en lados opuestos. <b>Combinado</b>: apilados en un panel. <b>Contiguo</b>: dos paneles adyacentes en el mismo lado.",
+      "split": "Dividido",
+      "combined": "Combinado",
+      "beside": "Contiguo"
+    },
+    "swap": {
+      "label": "Intercambiar lados de las barras laterales",
+      "description": "Cambia el lado en el que se ubica cada panel. De forma predeterminada, Archivos queda a la izquierda y Esquema a la derecha; al activarlo, Archivos pasa a la derecha y Esquema a la izquierda."
+    },
+    "filesWidth": {
+      "label": "Ancho de la barra de archivos"
+    },
+    "outlineWidth": {
+      "label": "Ancho de la barra de esquema"
+    }
+  },
+  "behavior": {
+    "fileHandling": {
+      "title": "Gestión de archivos"
+    },
+    "autoReload": {
+      "label": "Recarga automática",
+      "description": "Recargar el archivo cuando cambie en el disco"
+    },
+    "autoSave": {
+      "label": "Guardado automático",
+      "description": "Guardar los cambios en el disco automáticamente"
+    },
+    "reopenLastFile": {
+      "label": "Reabrir último archivo",
+      "description": "Abrir el último archivo visto al iniciar"
+    },
+    "confirmExternalLinks": {
+      "label": "Confirmar enlaces externos",
+      "description": "Preguntar antes de abrir enlaces en el navegador"
+    },
+    "recentFiles": {
+      "title": "Archivos recientes",
+      "clear": "Borrar archivos recientes"
+    }
+  },
+  "updates": {
+    "title": "Actualizaciones",
+    "check": {
+      "label": "Buscar actualizaciones",
+      "description": "Al iniciar, busca una versión más reciente y muestra un aviso cuando hay una disponible. Solo se compara la versión instalada; no se envía ningún archivo ni dato personal."
+    },
+    "checking": "Comprobando…",
+    "checkNow": "Comprobar ahora",
+    "current": "Tienes la última versión.",
+    "error": "No se pudieron buscar actualizaciones. Inténtalo de nuevo más tarde.",
+    "available": "La versión {{version}} está disponible.",
+    "download": "Descargar"
+  },
+  "editor": {
+    "title": "Editor",
+    "keymap": {
+      "label": "Mapa de teclas",
+      "description": "Combinaciones de teclas para el editor de markdown. Vim añade edición modal; VSCode replica los atajos habituales de VSCode. Surte efecto la próxima vez que un documento entre en modo de edición o dividido."
+    },
+    "keymapOptions": {
+      "default": "Predeterminado",
+      "vim": "Vim",
+      "vscode": "VSCode"
+    },
+    "pasteHtml": {
+      "label": "Pegar HTML como Markdown",
+      "description": "Al pegar texto enriquecido desde un navegador u otra aplicación, convertirlo a Markdown. Desactiva esta opción para pegar el texto sin formato."
+    },
+    "syncScroll": {
+      "label": "Sincronizar el desplazamiento dividido",
+      "description": "En el modo dividido, al desplazar un panel el otro se mueve a la posición equivalente. Desactiva esta opción para desplazar cada panel por separado."
+    },
+    "help": {
+      "default": {
+        "title": "Atajos predeterminados (Glyph)",
+        "autocomplete": "en un espacio de trabajo de carpeta abre el autocompletado de wikilinks",
+        "accept": "aceptar la sugerencia resaltada",
+        "undoRedo": "deshacer / rehacer",
+        "standard": "De lo contrario, atajos estándar de edición de texto del sistema operativo"
+      },
+      "vim": {
+        "title": "Referencia rápida de Vim",
+        "modes": "modos normal, insert, insert-after, visual",
+        "motions": "movimientos; f + carácter para saltar; / para buscar",
+        "operators": "operadores con contadores y objetos de texto (diw, ci\")",
+        "files": "Los comandos de archivo como :w, :q y :wq no se aplican aquí: Glyph guarda automáticamente y las pestañas se cierran con el atajo de cerrar pestaña."
+      },
+      "vscode": {
+        "title": "Atajos de VSCode",
+        "moveLine": "mover la línea actual arriba / abajo",
+        "copyLine": "copiar la línea arriba / abajo",
+        "comment": "alternar comentario de línea",
+        "multiSelect": "seleccionar la siguiente coincidencia; Cmd/Ctrl+] o [ para sangrar / quitar sangría"
+      }
+    },
+    "spellCheck": {
+      "title": "Revisión ortográfica",
+      "label": "Revisar ortografía",
+      "description": "Subraya las palabras mal escritas mientras editas. Haz clic derecho en una palabra para ver sugerencias. Se aplica al modo de edición y al modo dividido.",
+      "languagesLabel": "Idiomas",
+      "languagesDescription": "Las palabras se comprueban con cada idioma activado. El texto en alfabetos sin diccionario activado no se marca.",
+      "languages": {
+        "en": "Inglés (EE. UU.)"
+      },
+      "ignore": "Ignorar",
+      "add": "Añadir al diccionario",
+      "noSuggestions": "Sin sugerencias"
+    },
+    "format": {
+      "bold": "Negrita",
+      "italic": "Cursiva",
+      "code": "Código en línea",
+      "strikethrough": "Tachado",
+      "cut": "Cortar",
+      "copy": "Copiar",
+      "paste": "Pegar",
+      "selectAll": "Seleccionar todo"
+    },
+    "search": {
+      "find": "Buscar",
+      "replace": "Reemplazar",
+      "next": "Siguiente",
+      "previous": "Anterior",
+      "all": "Todo",
+      "matchCase": "Coincidir mayúsculas",
+      "regexp": "Regex",
+      "byWord": "Palabra completa",
+      "replaceOne": "Reemplazar",
+      "replaceAll": "Reemplazar todo",
+      "close": "Cerrar",
+      "currentMatch": "Coincidencia actual",
+      "onLine": "en la línea",
+      "replacedOnLine": "coincidencia reemplazada en la línea $",
+      "replacedMatches": "$ coincidencias reemplazadas"
+    }
+  },
+  "ai": {
+    "provider": {
+      "title": "Proveedor de IA",
+      "label": "Proveedor",
+      "none": "Ninguno",
+      "claude": "Claude (Anthropic)",
+      "openai": "OpenAI",
+      "ollama": "Ollama (local)"
+    },
+    "apiKey": {
+      "label": "Clave de API",
+      "description": "Se guarda en el llavero del sistema, nunca en archivos de configuración.",
+      "keychainError": "No se pudo guardar la clave en el llavero del sistema. Sigue disponible durante esta sesión; comprueba que tu llavero esté desbloqueado e inténtalo de nuevo."
+    },
+    "ollamaUrl": {
+      "label": "URL de Ollama",
+      "description": "Requiere OLLAMA_ORIGINS=* para CORS"
+    },
+    "model": {
+      "label": "Modelo",
+      "placeholder": "Selecciona o escribe el nombre del modelo",
+      "status": {
+        "checking": "Comprobando el servidor de Ollama…",
+        "ok": "Conectado a Ollama. Modelos instalados: {{count}}",
+        "error": "No se puede acceder al servidor de Ollama. Comprueba la URL y OLLAMA_ORIGINS."
+      }
+    },
+    "tts": {
+      "title": "Texto a voz"
+    },
+    "voice": {
+      "label": "Voz",
+      "placeholder": "Voz predeterminada del sistema"
+    },
+    "speed": {
+      "label": "Velocidad"
+    }
+  },
+  "print": {
+    "title": "Impresión y exportación a PDF",
+    "pageBreaks": {
+      "label": "Saltos de página",
+      "description": "Iniciar una página nueva en cada encabezado del nivel indicado",
+      "none": "Ninguno",
+      "h1": "En H1",
+      "h2": "En H2"
+    },
+    "toc": {
+      "label": "Incluir tabla de contenidos",
+      "description": "Insertar una página de contenidos al principio"
+    },
+    "epubMedia": {
+      "label": "Incrustar medios en EPUB",
+      "description": "Empaqueta el audio y el video por debajo de este tamaño en el libro; los archivos mayores solo se nombran",
+      "off": "Desactivado",
+      "mb": "{{limit}} MB"
+    },
+    "backgrounds": {
+      "label": "Imprimir fondos y colores",
+      "description": "Conservar los colores del tema en la salida"
+    }
+  },
+  "privacy": {
+    "title": "Informes de errores",
+    "crashReports": {
+      "label": "Enviar informes de fallos",
+      "description": "Desactivado de forma predeterminada. Cuando está activado, se envían informes de fallos anónimos (trazas de pila, sistema operativo y versión de la app) para ayudar a corregir errores. Tus archivos, rutas de archivo y enlaces nunca se incluyen. Solo se activa en compilaciones de producción. Consulta SECURITY.md para ver la política completa."
+    }
+  },
+  "secrets": {
+    "title": "Secretos guardados",
+    "description": "Lo que Glyph ha guardado en el llavero del sistema. Aquí nunca se muestran los valores, solo si una entrada está ocupada.",
+    "slots": {
+      "claude": "Clave de API de Claude",
+      "openai": "Clave de API de OpenAI"
+    },
+    "status": {
+      "saved": "Guardado",
+      "notSet": "Sin definir",
+      "checking": "Comprobando…",
+      "unknown": "No se pudo comprobar"
+    },
+    "add": "Añadir",
+    "addSlot": "Añadir {{slot}}",
+    "replace": "Reemplazar",
+    "replaceSlot": "Reemplazar {{slot}}",
+    "remove": "Eliminar",
+    "removeSlot": "Eliminar {{slot}}",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "placeholder": "Pega el nuevo valor",
+    "newValue": "Nuevo valor para {{slot}}",
+    "errors": {
+      "read": "No se pudo leer el llavero. Comprueba que esté desbloqueado y vuelve a abrir los ajustes.",
+      "remove": "No se pudo eliminar el secreto del llavero.",
+      "save": "No se pudo guardar el secreto en el llavero."
+    }
+  },
+  "hotkeys": {
+    "search": {
+      "placeholder": "Buscar atajos…",
+      "label": "Buscar atajos"
+    },
+    "conflict": "Entra en conflicto con otro atajo",
+    "recording": "Pulsa las teclas…",
+    "reset": "Restablecer",
+    "resetTitle": "Restablecer al valor predeterminado",
+    "aria": {
+      "recording": "Grabando atajo para {{command}}",
+      "change": "Cambiar atajo para {{command}}",
+      "reset": "Restablecer atajo para {{command}}"
+    }
+  },
+  "markdown": {
+    "title": "Funciones de Markdown",
+    "gfm": {
+      "label": "Tablas y listas de tareas",
+      "description": "GitHub Flavored Markdown: tablas, listas de tareas, tachado, autoenlaces"
+    },
+    "math": {
+      "label": "Matemáticas",
+      "description": "Ecuaciones KaTeX: $inline$ y $$block$$"
+    },
+    "alerts": {
+      "label": "Avisos",
+      "description": "Llamadas estilo GitHub: > [!NOTE], [!TIP], [!WARNING]"
+    },
+    "emoji": {
+      "label": "Atajos de emoji",
+      "description": "Convertir :smile: en emoji"
+    },
+    "wikilinks": {
+      "label": "Wikienlaces",
+      "description": "Resolver enlaces [[nota]] en el espacio de trabajo"
+    }
+  },
+  "defaultApp": {
+    "title": "App predeterminada",
+    "label": "App de Markdown predeterminada",
+    "description": "Abrir archivos Markdown en Glyph de forma predeterminada.",
+    "button": "Establecer Glyph como predeterminada",
+    "working": "Procesando…",
+    "outcome": {
+      "registered": "Glyph ahora es tu app de Markdown predeterminada.",
+      "openedSettings": "Se abrió la configuración de Apps predeterminadas. Elige Glyph para los archivos Markdown.",
+      "guidance": "En el Finder, haz clic derecho en un archivo Markdown, elige Obtener información, ajusta Abrir con a Glyph y pulsa Cambiar todo.",
+      "error": "No se pudo establecer la app predeterminada. Configúrala desde los ajustes del sistema."
+    }
+  }
+}

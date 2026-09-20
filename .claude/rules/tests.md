@@ -1,0 +1,41 @@
+---
+paths:
+  - "src/**/*.test.{ts,tsx}"
+  - "src/test/**"
+  - "src-tauri/src/**/*.rs"
+---
+
+# Test Rules
+
+## Frontend (Vitest + Testing Library)
+
+- Tests are colocated: `Foo.tsx` sits next to `Foo.test.tsx`. No `__tests__/` directories.
+- **Prop scaffolding**: when a component test file renders the component 3+ times, declare a module-level `const defaultProps = { ... }` with `vi.fn()` for callbacks and spread it: `render(<Foo {...defaultProps} query="x" />)`. Overrides go at the call site, not in per-test copies of the object.
+- When asserting a callback, create a fresh `vi.fn()` in that test and pass it as an override; don't assert on the shared `defaultProps` mock.
+- **Shared helpers live in `src/test/`** (e.g. `renderInWorkspace` for tests that need a workspace root in context). Add a helper there only when 2+ test files need it; a helper used by one file stays in that file.
+- **Fixtures**: sample data reused across test files (tabs, TOC entries, DirEntry trees) goes in `src/test/fixtures/`. Data used by one file stays inline in that file.
+- Mock Tauri modules per file with `vi.mock("@tauri-apps/api/core")` etc.; mock only the modules the file under test touches.
+- Query priority: prefer `getByRole` with an accessible name, then `getByText`; reach for `container` queries only for non-semantic DOM (canvas, SVG internals).
+
+## WebKit smoke tests (Playwright)
+
+- `src/test/e2e/*.spec.ts` runs in Playwright's WebKit only (`pnpm test:e2e`, CI job `Smoke / WebKit` in `ci-smoke.yml`); Vitest ignores it (it only collects `*.test.*`). This suite exists for behavior that differs by engine, like CSP enforcement inside blob workers (the D2 renderer); a Chromium run would pass even when the app is broken on Linux/macOS.
+- Keep it a smoke suite: a handful of engine-level checks, not app E2E coverage. It drives the bundled libraries directly, not the Tauri app.
+
+## Built-app smoke tests (tauri-driver)
+
+- `src/test/app/*.spec.ts` runs the built binary over WebDriver via `tauri-driver` (`pnpm test:app`, a plain `node --test` suite with a raw fetch client in `harness.ts`, no WebdriverIO). The `.spec.ts` suffix keeps Vitest out (it collects only `*.test.*`), and it lives in `src/test/app`, not `src/test/e2e`, so Playwright ignores it too.
+- This is the only test that launches the real process under the production CSP: it catches CSP/editor breakage (#390) and startup-race regressions (cold-launch, second-instance) that unit tests cannot. Assert layout, not just DOM content: in #390 the editor text was present in the DOM but laid out far below the fold because the CSP blocked CodeMirror's injected stylesheet. Needs a **release** binary (the single-instance plugin is release-only) and `tauri-driver` on PATH; keep it a handful of assertions.
+- CI runs it on Linux from the Build workflow via `.github/actions/app-smoke` (xvfb + `dbus-run-session`), reusing the release binary already built there; a failure flags PRs and blocks release publishing. macOS is unsupported (no WebKit WebDriver).
+
+## Rust
+
+- Unit tests live in `#[cfg(test)]` modules in the same file as the code under test.
+- A module whose test block outgrows the source it tests (roughly 200+ lines) may move to a sibling `tests.rs` submodule, as `sync/git/tests.rs` does.
+- In a module folder (`foo/mod.rs` + sibling files), each sibling keeps its own inline `#[cfg(test)] mod tests`; `tests.rs` holds only the connected tests that span siblings or drive the Tauri command surface (mock app), and shared fixtures live in a `#[cfg(test)] mod test_support` sibling. `commands/plugins/` is the reference layout.
+
+## Both
+
+- Tests assert behavior, not implementation: no snapshot tests, no asserting on internal state shape.
+- Stateful or security-sensitive changes cover the applicable rows of the adversarial scenario matrix in [docs/engineering-invariants.md](../../docs/engineering-invariants.md) (lifecycle transitions, stale completions, overlapping operations, denial paths).
+- Every gate must stay green: `pnpm typecheck && pnpm check && pnpm test`, and `cargo clippy --all-targets -- -D warnings` in `src-tauri/`.

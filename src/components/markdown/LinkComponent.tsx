@@ -1,0 +1,123 @@
+import { ask } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { type ComponentPropsWithoutRef, useCallback, useContext } from "react";
+import { useTranslation } from "react-i18next";
+import { ExternalLinkIcon } from "@/components/icons/ExternalLinkIcon";
+import { SettingsContext } from "@/contexts/SettingsContext";
+import { isOpenableRelativeHref } from "@/lib/relativePath";
+import { scrollToHeading } from "@/lib/scrollToHeading";
+import { WikilinkAnchor } from "./WikilinkAnchor";
+
+export interface LinkComponentProps extends ComponentPropsWithoutRef<"a"> {
+  onOpenWikilink?: (path: string, heading?: string) => void;
+  /**
+   * Open a relative markdown/canvas link in the workspace. Only provided when a
+   * folder workspace is open; absent in single-file mode, where relative links
+   * fall through to the browser as before.
+   */
+  onOpenRelativeFile?: (href: string) => void;
+}
+
+export function LinkComponent(props: LinkComponentProps) {
+  // ReactMarkdown 10 passes the source `node` as a prop; strip so we don't
+  // serialize it as an attribute on the rendered anchor.
+  const {
+    href,
+    children,
+    onOpenWikilink,
+    onOpenRelativeFile,
+    node: _node,
+    ...rest
+  } = props as LinkComponentProps & {
+    node?: unknown;
+  };
+  const { settings } = useContext(SettingsContext);
+  const { t } = useTranslation("common");
+
+  // Wikilink: identified by remarkWikilink-emitted data attributes. We never
+  // route these through openUrl — they're either a workspace file (resolved)
+  // or a no-op (broken). WikilinkAnchor owns click and hover preview.
+  const wikilinkTarget = (rest as Record<string, unknown>)["data-wikilink"];
+  const wikilinkPath = (rest as Record<string, unknown>)["data-wikilink-path"] as
+    | string
+    | undefined;
+  const wikilinkHeading = (rest as Record<string, unknown>)["data-wikilink-heading"] as
+    | string
+    | undefined;
+  const wikilinkBroken = "data-wikilink-broken" in (rest as object);
+
+  const handleClick = useCallback(
+    async (e: React.MouseEvent<HTMLAnchorElement>) => {
+      // react-markdown empties javascript:/data:/file: hrefs; following the
+      // resulting href="" would reload the app and drop unsaved edits.
+      if (!href) {
+        e.preventDefault();
+        return;
+      }
+
+      if (href.startsWith("#")) {
+        e.preventDefault();
+        const id = decodeURIComponent(href.slice(1));
+        if (id) scrollToHeading(id);
+        return;
+      }
+
+      // A relative link to a workspace document opens in-app instead of the
+      // browser. Resolution and root-clamping happen in the provided callback.
+      if (onOpenRelativeFile && isOpenableRelativeHref(href)) {
+        e.preventDefault();
+        onOpenRelativeFile(href);
+        return;
+      }
+
+      e.preventDefault();
+
+      if (settings.behavior.confirmExternalLinks) {
+        const confirmed = await ask(t("link.confirmMessage", { url: href }), {
+          title: t("link.openExternalTitle"),
+          kind: "info",
+          okLabel: t("link.open"),
+          cancelLabel: t("link.cancel"),
+        });
+        if (!confirmed) return;
+      }
+
+      // The opener plugin rejects targets its scope refuses, which a relative
+      // link to something that is not an openable document (a bare folder, an
+      // extensionless file) hits. There is nothing to recover, and React drops
+      // this handler's promise, so the rejection would surface as a crash.
+      try {
+        await openUrl(href);
+      } catch {
+        // Nothing opened; the click is a no-op.
+      }
+    },
+    [href, onOpenRelativeFile, settings.behavior.confirmExternalLinks, t],
+  );
+
+  if (typeof wikilinkTarget === "string") {
+    return (
+      <WikilinkAnchor
+        wikilinkTarget={wikilinkTarget}
+        path={wikilinkPath}
+        heading={wikilinkHeading}
+        broken={wikilinkBroken}
+        onOpenWikilink={onOpenWikilink}
+        {...rest}
+      >
+        {children}
+      </WikilinkAnchor>
+    );
+  }
+
+  // In-app relative links are not external, so they don't get the launch icon.
+  const isInternalRelative = !!onOpenRelativeFile && isOpenableRelativeHref(href);
+  const isExternal = href && !href.startsWith("#") && !isInternalRelative;
+
+  return (
+    <a href={href} onClick={handleClick} {...rest}>
+      {children}
+      {isExternal && <ExternalLinkIcon />}
+    </a>
+  );
+}

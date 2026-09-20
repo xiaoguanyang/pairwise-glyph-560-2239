@@ -1,0 +1,154 @@
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useSpringPresence } from "@/hooks/useSpringPresence";
+import { useVaultQuery } from "@/hooks/useVaultQuery";
+import { type Command, type CommandSection, rankCommands } from "@/lib/commands";
+import { CommandPaletteItem } from "./CommandPaletteItem";
+
+interface CommandPaletteProps {
+  open: boolean;
+  query: string;
+  commands: readonly Command[];
+  onQueryChange: (next: string) => void;
+  onClose: () => void;
+}
+
+const SECTION_ORDER: CommandSection[] = ["Files", "Headings", "Commands"];
+
+export function CommandPalette({
+  open,
+  query,
+  commands,
+  onQueryChange,
+  onClose,
+}: CommandPaletteProps) {
+  const { t } = useTranslation("commands");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  // `tag:foo` / `status:draft` terms are lifted out by the index, which also
+  // says which files they select; the rest of the query is fuzzy-matched here.
+  const { filters, text, paths } = useVaultQuery(query, open);
+  const ranked = useMemo(
+    () => rankCommands(text, commands, { paths: filters.length > 0 ? new Set(paths) : null }),
+    [text, commands, filters, paths],
+  );
+
+  // Reset selection when the result set changes so the top match is primed
+  // for Enter.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when results change
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [ranked]);
+
+  // Spring open/close: stays mounted while the exit spring runs, and
+  // reopening mid-close reverses from wherever it is.
+  const presence = useSpringPresence(open);
+
+  // Focus the input whenever the palette opens (the element only exists once
+  // presence has mounted it).
+  useEffect(() => {
+    if (open && presence.mounted) inputRef.current?.focus();
+  }, [open, presence.mounted]);
+
+  if (!presence.mounted) return null;
+
+  const runAtIndex = (index: number) => {
+    if (!open) return;
+    const hit = ranked[index];
+    if (!hit) return;
+    onClose();
+    hit.command.run();
+  };
+
+  // While the exit spring runs the palette is still mounted; `inert` covers
+  // real browsers, but the guards keep a key repeat from re-running a command
+  // in environments that don't enforce it.
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (!open) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelectedIndex((prev) => Math.min(prev + 1, ranked.length - 1));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelectedIndex((prev) => Math.max(prev - 1, 0));
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runAtIndex(selectedIndex);
+    }
+  };
+
+  const handleOverlayKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!open) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    }
+  };
+
+  // Group ranked hits by section, preserving overall rank order.
+  const sections = SECTION_ORDER.map((section) => ({
+    section,
+    items: ranked
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => row.command.section === section),
+  })).filter(({ items }) => items.length > 0);
+
+  return (
+    <div
+      ref={presence.ref}
+      className="command-palette-overlay"
+      onClick={(e) => {
+        if (open && e.target === e.currentTarget) onClose();
+      }}
+      onKeyDown={handleOverlayKeyDown}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("palette.title")}
+      data-print-hide="true"
+    >
+      <div className="command-palette">
+        <input
+          ref={inputRef}
+          type="text"
+          className="command-palette-input"
+          placeholder={t("palette.placeholder")}
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          aria-label={t("palette.queryLabel")}
+        />
+        <div className="command-palette-results">
+          {sections.length === 0 ? (
+            <div className="command-palette-empty">{t("palette.empty")}</div>
+          ) : (
+            sections.map(({ section, items }) => (
+              <div key={section} className="command-palette-group">
+                <div className="command-palette-section">{t(`section.${section}`)}</div>
+                {items.map(({ row, index }) => (
+                  <CommandPaletteItem
+                    key={row.command.id}
+                    row={row}
+                    selected={selectedIndex === index}
+                    onActivate={() => runAtIndex(index)}
+                    onHover={() => setSelectedIndex(index)}
+                  />
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

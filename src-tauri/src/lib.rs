@@ -1,0 +1,823 @@
+mod canvas;
+mod cli;
+#[cfg(desktop)]
+mod cli_help;
+mod commands;
+mod d2;
+#[cfg(desktop)]
+mod data_dir;
+mod extensions;
+mod grants;
+mod image;
+mod markdown;
+// `glyph mcp`, served before any Tauri builder exists.
+#[cfg(desktop)]
+mod mcp;
+// Menus (tauri::menu), sync (git2), and telemetry (sentry) don't exist on
+// mobile; their `generate_handler!` entries and managed state are gated too.
+#[cfg(desktop)]
+mod menu;
+#[cfg(desktop)]
+mod menu_runtime;
+mod notebook;
+mod secrets;
+// The preview server behind `glyph serve`; desktop-only, like the CLI
+// surface that reaches it.
+#[cfg(desktop)]
+mod serve;
+mod setup;
+mod sync;
+#[cfg(desktop)]
+mod telemetry;
+mod vault;
+mod watcher;
+mod window_events;
+mod windows;
+mod windows_runtime;
+mod workspace;
+
+use setup::setup_app;
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::RunEvent;
+use watcher::FileWatcherState;
+use window_events::handle_window_event;
+
+pub use canvas::is_canvas_file;
+pub use d2::is_d2_file;
+pub use image::is_image_file;
+pub use markdown::is_markdown_file;
+pub use notebook::{is_notebook_file, is_supported_file};
+
+pub const APP_NAME: &str = "glyph";
+
+/// Stash a backend-observed open into the `InitialFile` / `InitialFolder`
+/// managed state, the startup safety net: the routed emit is lost when it fires
+/// before the target webview has attached its `open-file` / `open-folder`
+/// listeners, but the frontend's mount-time `get_initial_file` /
+/// `get_initial_folder` query reads (and consumes) the stash, so the open
+/// survives either way.
+pub(crate) fn stash_initial_open<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    kind: windows::OpenKind,
+    path: &str,
+) {
+    match kind {
+        windows::OpenKind::Folder => {
+            if let Some(state) = app_handle.try_state::<commands::InitialFolder>() {
+                if let Ok(mut slot) = state.0.lock() {
+                    *slot = Some(path.to_string());
+                }
+            }
+        }
+        windows::OpenKind::File => {
+            if let Some(state) = app_handle.try_state::<commands::InitialFile>() {
+                if let Ok(mut slot) = state.0.lock() {
+                    *slot = Some(path.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Handle a second-instance launch: refocus the main window and forward the
+/// file/folder argument (if any) to the frontend via the same `open-file` /
+/// `open-folder` events used by drag-and-drop and macOS RunEvent::Opened.
+/// The path is also stashed via [`stash_initial_open`] so an open that fires
+/// before the webview mounts is not lost.
+///
+/// Generic over Tauri's runtime so we can drive it with `tauri::test::MockRuntime`
+/// in unit tests without a real window manager.
+pub fn handle_second_instance<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    argv: Vec<String>,
+    cwd_str: String,
+) {
+    // Focus whatever window is current first, so a bare relaunch (no path) just
+    // resurfaces the app.
+    let current = windows_runtime::current_window_label(app_handle);
+    windows_runtime::focus_window(app_handle, &current);
+
+    if let Some(event) = cli::second_instance_event(&argv, &std::path::PathBuf::from(&cwd_str)) {
+        let kind = if event.event_name == "open-folder" {
+            windows::OpenKind::Folder
+        } else {
+            windows::OpenKind::File
+        };
+        stash_initial_open(app_handle, kind, &event.path);
+        if let Some(registry) = app_handle.try_state::<windows::WindowRegistry>() {
+            windows_runtime::open_in_app(app_handle, &registry, kind, event.path, &current);
+        }
+    }
+}
+
+/// Handle a macOS `RunEvent::Opened`: classify each opened path, stash the first
+/// supported one as the initial file/folder, and route it to a window. The stash
+/// is the cold-start safety net — a launch that opens Glyph delivers this event
+/// before the frontend has registered its `open-file` listener, so the emit inside
+/// `open_in_app` is lost; the mount-time `get_initial_file` / `get_initial_folder`
+/// query reads the stash instead. First supported path wins.
+///
+/// `pub` so it is exempt from dead-code warnings on non-macOS targets (same reason
+/// `handle_second_instance` is pub), and testable under `MockRuntime` everywhere.
+pub fn handle_opened_paths<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    paths: Vec<std::path::PathBuf>,
+) {
+    let Some(registry) = app_handle.try_state::<windows::WindowRegistry>() else {
+        return;
+    };
+    let current = windows_runtime::current_window_label(app_handle);
+    for path in paths {
+        // `cli::classify_resolved_path` is the same classifier the CLI arg block
+        // uses, so the file/folder gating and the non-markdown rejection stay in
+        // lockstep. Routing decides whether to focus, adopt, or spawn a window.
+        match cli::classify_resolved_path(&path) {
+            Some(cli::InitialOpenAction::Folder(p)) => {
+                stash_initial_open(app_handle, windows::OpenKind::Folder, &p);
+                windows_runtime::open_in_app(
+                    app_handle,
+                    &registry,
+                    windows::OpenKind::Folder,
+                    p,
+                    &current,
+                );
+                break;
+            }
+            Some(cli::InitialOpenAction::File(p)) => {
+                stash_initial_open(app_handle, windows::OpenKind::File, &p);
+                windows_runtime::open_in_app(
+                    app_handle,
+                    &registry,
+                    windows::OpenKind::File,
+                    p,
+                    &current,
+                );
+                break;
+            }
+            Some(cli::InitialOpenAction::RejectedUnsupported(p)) => {
+                eprintln!("Refusing to open unsupported file type: {p}");
+                // Keep scanning the list — the user may have selected a mix of
+                // supported and unsupported files.
+            }
+            None => {}
+        }
+    }
+}
+
+/// Build a fresh `tauri::Builder` with the platform-conditional single-instance
+/// plugin registered on Windows and Linux. macOS routes second launches via
+/// `RunEvent::Opened`, so it gets a vanilla builder.
+///
+/// Debug builds skip the plugin everywhere: with it registered, `tauri dev`
+/// silently forwards to any glyph.exe left over from an earlier session and
+/// exits, which both kills the dev run and leaves stale code on screen.
+///
+/// Extracted from `run()` so the cfg-gated branches can be unit-tested without
+/// actually starting the Tauri runtime.
+///
+/// `forward_to_running_instance` is false for a CLI export: forwarding hands
+/// the arguments to whatever Glyph the user already has open and exits 0, so
+/// the export would silently never run.
+pub fn make_app_builder(forward_to_running_instance: bool) -> tauri::Builder<tauri::Wry> {
+    #[cfg(all(not(debug_assertions), any(target_os = "linux", target_os = "windows")))]
+    let builder = if forward_to_running_instance {
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(handle_second_instance))
+    } else {
+        tauri::Builder::default()
+    };
+
+    #[cfg(not(all(not(debug_assertions), any(target_os = "linux", target_os = "windows"))))]
+    let builder = {
+        let _ = forward_to_running_instance;
+        tauri::Builder::default()
+    };
+
+    builder
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // Answered before Tauri (and therefore GTK/WebKit) starts, so packaging
+    // smoke tests can verify an installed binary headlessly. `tauri-plugin-cli`
+    // parses args from inside `setup`, which is far too late for that.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().skip(1).any(|a| a == "--version" || a == "-V") {
+        println!("glyph {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    #[cfg(desktop)]
+    if cli_help::wants_help(&args) {
+        println!("{}", cli_help::usage());
+        return;
+    }
+
+    // `glyph mcp` answers on stdio for as long as its client keeps it open.
+    // It never builds the app, so no window, webview or plugin exists, and
+    // nothing but protocol messages reaches stdout.
+    #[cfg(desktop)]
+    if cli::subcommand(&args) == Some(cli::Subcommand::Mcp) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let code = match cli::mcp_plan(&args, &cwd) {
+            Ok(vaults) => {
+                #[cfg(windows)]
+                mcp::keep_stdio_from_children();
+                mcp::run(
+                    vaults,
+                    None,
+                    std::io::stdin().lock(),
+                    std::io::stdout().lock(),
+                )
+            }
+            Err(usage) => {
+                eprintln!("{usage}");
+                2
+            }
+        };
+        std::process::exit(code);
+    }
+
+    // A subcommand does its work in this process, so it must not be
+    // forwarded to a Glyph the user already has open.
+    #[cfg(desktop)]
+    let forward_to_running_instance = cli::forwards_to_running_instance(&args);
+    #[cfg(not(desktop))]
+    let forward_to_running_instance = true;
+
+    let builder = make_app_builder(forward_to_running_instance)
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        // Marketplace package downloads only; the URL scope lives in
+        // capabilities/default.json.
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_store::Builder::new().build());
+
+    // CLI args, window-state restoration, the native menu bar, sync, and
+    // telemetry only exist on desktop (see the Cargo.toml target table).
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_cli::init())
+        .plugin(
+            // Restore size/position/etc, but NOT visibility: the window is
+            // created hidden (see tauri.conf.json) and revealed by the frontend
+            // once it has painted, so the plugin must not re-show it early.
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
+        .on_menu_event(menu::handle_menu_event)
+        .manage(sync::SyncState::new())
+        .manage(telemetry::TelemetryState(Mutex::new(None)));
+
+    let app = builder
+        .manage(FileWatcherState(Arc::new(Mutex::new(
+            std::collections::HashMap::new(),
+        ))))
+        .manage(commands::InitialFile(Mutex::new(None)))
+        .manage(commands::InitialFolder(Mutex::new(None)))
+        .manage(commands::CliExport(Mutex::new(None)))
+        .manage(windows::WindowRegistry::new())
+        .manage(grants::GrantRegistry::default())
+        .manage(vault::VaultStore::default())
+        .setup(setup_app)
+        .on_window_event(handle_window_event)
+        .invoke_handler(tauri::generate_handler![
+            commands::file::read_file,
+            commands::file::write_file,
+            commands::file::write_binary_file,
+            commands::file::create_dir_all,
+            commands::file::copy_file,
+            commands::file::prune_export_dir,
+            commands::file::get_file_metadata,
+            commands::file::get_initial_file,
+            commands::file::allow_document_asset,
+            #[cfg(desktop)]
+            commands::file::print_document,
+            #[cfg(desktop)]
+            commands::pick::pick_folder,
+            #[cfg(desktop)]
+            commands::pick::pick_new_workspace,
+            #[cfg(desktop)]
+            commands::pick::pick_files,
+            #[cfg(desktop)]
+            commands::pick::pick_save,
+            #[cfg(desktop)]
+            commands::pick::pick_export_dir,
+            #[cfg(desktop)]
+            commands::pick::pick_plugin_dir,
+            #[cfg(desktop)]
+            commands::pick::pick_move_dir,
+            commands::export::get_cli_export,
+            commands::export_runtime::finish_cli_export,
+            #[cfg(desktop)]
+            commands::serve::get_cli_serve,
+            #[cfg(desktop)]
+            commands::serve::serve_ready,
+            #[cfg(desktop)]
+            commands::serve::serve_failed,
+            commands::default_app::set_default_markdown_app,
+            commands::secrets::secret_get,
+            commands::secrets::secret_set,
+            commands::secrets::secret_has,
+            commands::directory::get_initial_folder,
+            commands::directory::read_directory,
+            commands::directory::list_markdown_files,
+            commands::create::create_note,
+            commands::create::create_canvas,
+            commands::create::create_folder,
+            commands::create::rename_path,
+            commands::create::duplicate_path,
+            commands::create::move_path,
+            commands::create::delete_path,
+            vault::commands::vault_snapshot,
+            vault::commands::vault_refresh,
+            vault::commands::vault_forget,
+            vault::commands::vault_backlinks,
+            vault::commands::vault_resolve,
+            vault::commands::vault_query,
+            vault::commands::vault_paths_with_tag,
+            commands::search::search_workspace,
+            commands::plugins::list_plugins,
+            commands::plugins::inspect_plugin,
+            commands::plugins::install_plugin,
+            commands::plugins::install_plugin_package,
+            commands::plugins::read_plugin_asset,
+            commands::plugins::uninstall_plugin,
+            watcher::watch_file,
+            watcher::unwatch_file,
+            watcher::watch_directory,
+            watcher::unwatch_directory,
+            #[cfg(desktop)]
+            menu_runtime::apply::set_menu_state,
+            #[cfg(desktop)]
+            menu_runtime::apply::apply_keybindings,
+            #[cfg(desktop)]
+            menu_runtime::apply::set_menu_labels,
+            #[cfg(desktop)]
+            menu_runtime::apply::set_lightbox_fullscreen,
+            windows_runtime::set_window_workspace,
+            windows_runtime::set_window_files,
+            windows_runtime::request_open,
+            windows_runtime::open_in_new_window,
+            windows_runtime::window_showing_file,
+            #[cfg(desktop)]
+            sync::commands::sync_set_config,
+            #[cfg(desktop)]
+            sync::commands::sync_get_config,
+            #[cfg(desktop)]
+            sync::commands::sync_remove_config,
+            #[cfg(desktop)]
+            sync::commands::sync_set_token,
+            #[cfg(desktop)]
+            sync::commands::sync_clear_token,
+            #[cfg(desktop)]
+            sync::commands::sync_has_token,
+            #[cfg(desktop)]
+            sync::commands::sync_init_repo,
+            #[cfg(desktop)]
+            sync::commands::sync_clone_remote,
+            #[cfg(desktop)]
+            sync::commands::sync_set_origin,
+            #[cfg(desktop)]
+            sync::commands::sync_commit_config,
+            #[cfg(desktop)]
+            sync::commands::sync_status,
+            #[cfg(desktop)]
+            sync::commands::sync_run,
+            #[cfg(desktop)]
+            sync::commands::sync_default_author,
+            #[cfg(desktop)]
+            sync::commands::sync_repo_present,
+            workspace::commands::workspace_resolve,
+            workspace::commands::workspace_get_last_file,
+            workspace::commands::workspace_set_last_file,
+            #[cfg(desktop)]
+            telemetry::set_error_reporting,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building Glyph");
+
+    app.run(|_app_handle, _event| {
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = _event {
+            let paths = urls
+                .into_iter()
+                .filter_map(|url| url.to_file_path().ok())
+                .collect();
+            handle_opened_paths(_app_handle, paths);
+        }
+        // Windows only: after the event loop is torn down, a late Win32 message
+        // reaching tao's runner panics outside any catch_unwind, which aborts
+        // the process on exit (tauri-apps/tao#1180). Plugin `on_event` handlers
+        // (window state, stores) run before this callback, so everything that
+        // must persist is already written by the time `Exit` arrives.
+        #[cfg(target_os = "windows")]
+        if matches!(_event, RunEvent::Exit) {
+            telemetry::flush();
+            std::process::exit(0);
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tauri::test::{mock_app, MockRuntime};
+    use tauri::WebviewWindowBuilder;
+
+    /// A mock app with a "main" window and a managed window registry, so
+    /// `handle_second_instance`'s focus + routing path can run end to end.
+    fn routed_app() -> tauri::App<MockRuntime> {
+        let app = mock_app_with_main_window();
+        app.manage(crate::windows::WindowRegistry::new());
+        app.manage(crate::grants::GrantRegistry::default());
+        // The initial-file/folder state that `handle_opened_paths` and
+        // `handle_second_instance` stash into (the pre-mount safety net) so
+        // tests can read the stash back.
+        app.manage(commands::InitialFile(Mutex::new(None)));
+        app.manage(commands::InitialFolder(Mutex::new(None)));
+        app
+    }
+
+    fn stashed_file(app: &tauri::App<MockRuntime>) -> Option<String> {
+        app.state::<commands::InitialFile>()
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    fn stashed_folder(app: &tauri::App<MockRuntime>) -> Option<String> {
+        app.state::<commands::InitialFolder>()
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    /// Build a mock app with a "main" webview window so the
+    /// `app_handle.get_webview_window("main")` branch in
+    /// [`handle_second_instance`] resolves to `Some(window)`. Tests that don't
+    /// care about that branch use [`mock_app`] directly.
+    fn mock_app_with_main_window() -> tauri::App<MockRuntime> {
+        let app = mock_app();
+        WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock main window should build");
+        app
+    }
+
+    fn unique_tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "glyph_lib_test_{}_{}_{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // handle_second_instance is thin glue over `cli::second_instance_event`
+    // (classification, tested in cli.rs) and `windows::route_open` (routing,
+    // tested in windows.rs). Its runtime effects (focus / emit_to / window
+    // spawn) can't be observed under MockRuntime, but the stash into
+    // InitialFile / InitialFolder can: it is the safety net for a second
+    // instance that fires before the first instance's webview has attached
+    // its open-file / open-folder listeners, so the emit alone would be lost.
+    #[test]
+    fn handle_second_instance_stashes_the_file_for_a_pre_mount_window() {
+        let cwd = unique_tmp("hsi_file");
+        let file = cwd.join("note.md");
+        fs::write(&file, "hi").unwrap();
+        let app = routed_app();
+        handle_second_instance(
+            &app.handle().clone(),
+            vec!["glyph".to_string(), "note.md".to_string()],
+            cwd.to_string_lossy().to_string(),
+        );
+        assert_eq!(
+            PathBuf::from(stashed_file(&app).expect("file should be stashed"))
+                .canonicalize()
+                .unwrap(),
+            file.canonicalize().unwrap()
+        );
+        assert_eq!(stashed_folder(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_second_instance_stashes_the_folder_for_a_pre_mount_window() {
+        let cwd = unique_tmp("hsi_dir");
+        let folder = cwd.join("workspace");
+        fs::create_dir_all(&folder).unwrap();
+        let app = routed_app();
+        handle_second_instance(
+            &app.handle().clone(),
+            vec!["glyph".to_string(), "workspace".to_string()],
+            cwd.to_string_lossy().to_string(),
+        );
+        assert_eq!(
+            PathBuf::from(stashed_folder(&app).expect("folder should be stashed"))
+                .canonicalize()
+                .unwrap(),
+            folder.canonicalize().unwrap()
+        );
+        assert_eq!(stashed_file(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_second_instance_with_no_path_arg_only_focuses() {
+        let cwd = unique_tmp("hsi_noop");
+        let app = routed_app();
+        handle_second_instance(
+            &app.handle().clone(),
+            vec!["glyph".to_string(), "--help".to_string()],
+            cwd.to_string_lossy().to_string(),
+        );
+        assert_eq!(stashed_file(&app), None);
+        assert_eq!(stashed_folder(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_second_instance_silently_ignores_unresolvable_paths() {
+        let cwd = unique_tmp("hsi_missing");
+        let app = routed_app();
+        handle_second_instance(
+            &app.handle().clone(),
+            vec!["glyph".to_string(), "nope.md".to_string()],
+            cwd.to_string_lossy().to_string(),
+        );
+        assert_eq!(stashed_file(&app), None);
+        assert_eq!(stashed_folder(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    // handle_opened_paths is the macOS file-association entry point. Its window
+    // effects (focus / emit / spawn) can't be observed under MockRuntime, but the
+    // cold-start stash into InitialFile / InitialFolder — the actual fix for
+    // clicking a file while Glyph is closed — is managed state we can read back.
+    #[test]
+    fn handle_opened_paths_stashes_a_file_for_cold_start() {
+        let cwd = unique_tmp("op_file");
+        let file = cwd.join("note.md");
+        fs::write(&file, "hi").unwrap();
+        let app = routed_app();
+
+        handle_opened_paths(&app.handle().clone(), vec![file.clone()]);
+
+        assert_eq!(
+            stashed_file(&app).as_deref(),
+            Some(file.to_string_lossy().as_ref())
+        );
+        assert_eq!(stashed_folder(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_opened_paths_stashes_a_folder_for_cold_start() {
+        let cwd = unique_tmp("op_folder");
+        let folder = cwd.join("workspace");
+        fs::create_dir_all(&folder).unwrap();
+        let app = routed_app();
+
+        handle_opened_paths(&app.handle().clone(), vec![folder.clone()]);
+
+        assert_eq!(
+            stashed_folder(&app).as_deref(),
+            Some(folder.to_string_lossy().as_ref())
+        );
+        assert_eq!(stashed_file(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_opened_paths_mints_grants_for_routed_paths() {
+        let cwd = unique_tmp("op_grants");
+        let folder = cwd.join("workspace");
+        fs::create_dir_all(&folder).unwrap();
+        let file = cwd.join("note.md");
+        fs::write(&file, "hi").unwrap();
+
+        let app = routed_app();
+        handle_opened_paths(&app.handle().clone(), vec![folder.clone()]);
+        let app2 = routed_app();
+        handle_opened_paths(&app2.handle().clone(), vec![file.clone()]);
+
+        let grants = app.state::<crate::grants::GrantRegistry>();
+        assert!(grants
+            .ensure_workspace(folder.to_string_lossy().as_ref())
+            .is_ok());
+        let grants2 = app2.state::<crate::grants::GrantRegistry>();
+        assert!(grants2
+            .ensure_readable(file.to_string_lossy().as_ref())
+            .is_ok());
+        // The other app never saw the file, so it stays denied there.
+        assert!(grants
+            .ensure_readable(file.to_string_lossy().as_ref())
+            .is_err());
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_opened_paths_ignores_unsupported_files() {
+        let cwd = unique_tmp("op_txt");
+        let file = cwd.join("evil.txt");
+        fs::write(&file, "<script>alert('x')</script>").unwrap();
+        let app = routed_app();
+
+        handle_opened_paths(&app.handle().clone(), vec![file]);
+
+        assert_eq!(stashed_file(&app), None);
+        assert_eq!(stashed_folder(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn handle_opened_paths_ignores_missing_paths() {
+        let cwd = unique_tmp("op_missing");
+        let app = routed_app();
+
+        handle_opened_paths(&app.handle().clone(), vec![cwd.join("nope.md")]);
+
+        assert_eq!(stashed_file(&app), None);
+        assert_eq!(stashed_folder(&app), None);
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn make_app_builder_constructs_a_builder_either_way() {
+        // We can't run the resulting builder (would start a real window
+        // manager), but constructing it covers the cfg-gated plugin setup.
+        // An export passes false so the launch is never forwarded to a Glyph
+        // the user already has open, which would skip the export entirely.
+        std::mem::drop(make_app_builder(true));
+        std::mem::drop(make_app_builder(false));
+    }
+
+    // Each (directive, source) pair backs a shipped surface: WASM for
+    // Mermaid/D2, blob/data scripts for the plugin worker sandbox, eval for
+    // the D2 blob worker's `new Function` ELK loader (WebKit enforces the page
+    // CSP inside blob workers, so without it D2 never renders there), remote
+    // schemes for document-embedded images/media, https for AI providers and
+    // the marketplace, inline styles for theme injection.
+    // Spawned secondary windows for a second folder are labelled `w1`, `w2`, …
+    // (windows::WindowRegistry::next_label). The capability files must apply to
+    // them as well as `main`, or a spawned window gets zero permissions once it
+    // loads (no store, dialog, or IPC events).
+    #[test]
+    fn capabilities_apply_to_spawned_windows() {
+        for capability in [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/desktop.json"),
+            include_str!("../capabilities/mobile.json"),
+        ] {
+            let conf: serde_json::Value = serde_json::from_str(capability).unwrap();
+            let windows: Vec<&str> = conf["windows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().unwrap())
+                .collect();
+            assert!(windows.contains(&"main"), "capability must cover main");
+            assert!(
+                windows.contains(&"w*"),
+                "capability must cover spawned `w*` windows, got {windows:?}"
+            );
+        }
+    }
+
+    // useWindowClose intercepts close-requested, then re-issues close(); the
+    // @tauri-apps/api wrapper finishes the un-prevented pass with destroy().
+    // Missing any of these permissions leaves every window un-closable (#530).
+    #[test]
+    fn close_pipeline_permissions_are_granted() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let perms: Vec<&str> = conf["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        for perm in [
+            "core:window:allow-show",
+            "core:window:allow-set-focus",
+            "core:window:allow-close",
+            "core:window:allow-destroy",
+        ] {
+            assert!(perms.contains(&perm), "default capability must keep {perm}");
+        }
+    }
+
+    /// The fs plugin's `scope-app-recursive` scope, which `fs:default` pulls
+    /// in, is unioned across every fs command, reads and writes alike. Granting
+    /// any fs permission to the default capability therefore hands the webview
+    /// write access to `$APPCONFIG`, which is where plugins are installed
+    /// (`commands/plugins/mod.rs`), so a compromised renderer could persist
+    /// code across restarts. Desktop routes every filesystem call through
+    /// `GrantRegistry` instead; the fs plugin belongs to the mobile-only
+    /// capability (#698).
+    #[test]
+    fn default_capability_grants_no_filesystem_plugin_access() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        for permission in conf["permissions"].as_array().unwrap() {
+            let identifier = permission
+                .as_str()
+                .or_else(|| permission["identifier"].as_str())
+                .expect("every permission is a string or an object with an identifier");
+            assert!(
+                !identifier.starts_with("fs:"),
+                "default capability must not grant {identifier}: the fs plugin is mobile-only"
+            );
+        }
+    }
+
+    /// Mobile keeps the fs read path because Android pickers return
+    /// `content://` URIs that the Rust commands cannot open, but it must stay
+    /// fenced off desktop and must never gain a write permission.
+    #[test]
+    fn mobile_capability_keeps_reads_only() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/mobile.json")).unwrap();
+        let platforms: Vec<&str> = conf["platforms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(platforms, ["android", "iOS"]);
+        let perms: Vec<&str> = conf["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert!(perms.contains(&"fs:allow-read-text-file"));
+        assert!(
+            !perms.iter().any(|p| p.contains("write")),
+            "mobile capability must not gain fs write access"
+        );
+    }
+
+    #[test]
+    fn csp_keeps_every_surface_the_app_depends_on() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let sec = &conf["app"]["security"];
+        for key in ["csp", "devCsp"] {
+            let csp = sec[key].as_str().unwrap();
+            for (directive, source) in [
+                ("script-src", "'wasm-unsafe-eval'"),
+                ("script-src", "'unsafe-eval'"),
+                ("script-src", "blob:"),
+                ("script-src", "data:"),
+                ("img-src", "https:"),
+                ("img-src", "http:"),
+                ("img-src", "asset:"),
+                ("img-src", "data:"),
+                ("img-src", "blob:"),
+                ("media-src", "https:"),
+                ("connect-src", "https:"),
+                ("connect-src", "ipc:"),
+                ("style-src", "'unsafe-inline'"),
+                ("font-src", "data:"),
+            ] {
+                let value = csp
+                    .split(';')
+                    .find(|d| d.trim_start().starts_with(directive))
+                    .unwrap_or_else(|| panic!("{key} is missing {directive}"));
+                assert!(
+                    value.contains(source),
+                    "{key}: {directive} must keep {source}"
+                );
+            }
+            assert!(
+                csp.contains("object-src 'none'"),
+                "{key} must keep object-src 'none'"
+            );
+            assert!(
+                csp.contains("frame-src 'none'"),
+                "{key} must keep frame-src 'none'"
+            );
+        }
+        let allow = sec["assetProtocol"]["scope"]["allow"].as_array().unwrap();
+        assert!(allow.is_empty(), "asset scope must stay empty at rest");
+    }
+}

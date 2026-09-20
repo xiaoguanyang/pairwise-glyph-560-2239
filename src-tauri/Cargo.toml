@@ -1,0 +1,103 @@
+[package]
+name = "glyph"
+version = "0.24.0"
+description = "A cross-platform markdown viewer"
+authors = ["hamidfzm"]
+edition = "2021"
+
+[lib]
+name = "glyph_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+serde_json = "1"
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-os = "2"
+tauri-plugin-store = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "8"
+tauri-plugin-opener = "2.5.4"
+walkdir = "2.5.0"
+thiserror = "2"
+# Backs all three workspace-search toggles (literal, whole-word, regex) with a
+# single compiled pattern. Already in the tree transitively.
+regex = "1"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# Frontmatter for the vault index. Driven through the event parser rather than
+# `YamlLoader`, because `Event::Scalar` carries the scalar's source text: that
+# is the FAILSAFE behaviour the renderer's js-yaml schema gives, so `2026-04-15`
+# and `true` stay the strings the document shows.
+yaml-rust2 = "0.12"
+# OS credential manager for AI provider API keys (macOS Keychain, Windows
+# Credential Manager, Linux Secret Service). `vendored` builds libdbus from
+# source so Linux builds and CI don't need libdbus-1-dev installed.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "vendored",
+] }
+tauri-plugin-clipboard-manager = "2"
+# Marketplace downloads. GitHub release assets send no CORS headers, so the
+# webview's own fetch cannot read them; this routes the request through Rust,
+# and capabilities/default.json scopes it to the plugin registry's hosts.
+tauri-plugin-http = "2"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+# `#[tokio::test]` macro for async unit tests. Tauri already pulls tokio
+# in transitively; we only need the macro / runtime entry points here.
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[target."cfg(any(target_os = \"linux\", target_os = \"windows\"))".dependencies]
+tauri-plugin-single-instance = "2"
+
+# Desktop-only dependencies. The plugins have no mobile equivalent (no CLI
+# args or OS window state there); git2's vendored OpenSSL and sentry don't
+# cross-compile for android/ios, and the features they power (workspace sync,
+# git repo detection, crash reporting) are desktop-only for now (see #79).
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-cli = "2"
+# `glyph serve`: the preview server behind the CLI's one subcommand. These are
+# already in the tree through Tauri's own HTTP stack, so declaring them adds
+# no new dependency graph; enabling `tower-http`'s `fs` feature does pull in a
+# few small crates of its own (mime_guess, http-range-header). That feature is
+# the reason to reach for these at all: ServeDir owns MIME guessing, index
+# resolution, and keeping requests inside the served directory, none of which
+# is worth hand-rolling.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = { version = "0.3", default-features = false }
+tokio = { version = "1", features = ["net", "sync", "signal", "time"] }
+# The site a `glyph serve` without `--out` writes to. Not just a name under
+# the system temp directory: that is world-writable on Unix, so a predictable
+# name is a local attacker's choice of what the victim's browser loads.
+tempfile = "3"
+tauri-plugin-window-state = "2"
+# `glyph mcp` finds the app's stores without Tauri's path resolver. Tauri
+# resolves its own app directories through this crate, so it is already in
+# the tree at the version those paths have to match.
+dirs = "6"
+# Statically-linked libgit2 so end users don't need a system Git install.
+# `https` and `ssh` are the transports (git2 0.21 enables none by default);
+# `vendored-openssl` keeps them self-contained.
+git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
+# rustls (not native-tls) so release builds don't need OpenSSL system libs on
+# Linux. Default integrations include the panic handler we rely on.
+sentry = { version = "0.42", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "reqwest",
+    "rustls",
+] }

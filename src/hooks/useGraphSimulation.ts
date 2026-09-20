@@ -1,0 +1,140 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  capturePositions,
+  createGraphLayout,
+  type GraphLayout,
+  LAYOUT_MAX_TICKS,
+  type NodePosition,
+  tickLayout,
+} from "@/lib/graphSimulation";
+import { loadGraphView, saveGraphView } from "@/lib/graphViewStore";
+import type { VaultSnapshot } from "@/lib/vault";
+import { useReducedMotion } from "./useReducedMotion";
+
+type WorkspaceGraph = VaultSnapshot["graph"];
+
+export interface UseGraphSimulationOptions {
+  /** Simulation steps per animation frame. Tuned for 60fps; tests raise it. */
+  ticksPerFrame?: number;
+  /** Hard cap on total steps per layout pass. */
+  maxTicks?: number;
+  /** Workspace root to seed positions from and write them back to, so a layout
+   *  outlives the graph tab's mount. Omitted, positions live for this mount. */
+  persistKey?: string;
+}
+
+export interface GraphSimulationState {
+  layout: GraphLayout;
+  /** Bumped once per animation frame while the layout is moving. */
+  version: number;
+  /** True once the current layout pass has finished. */
+  settled: boolean;
+  /** Warm the simulation back up and resume animating (used while dragging a
+   *  node). Resets the per-pass tick budget so an interaction is never cut off
+   *  by the anti-spin cap. */
+  reheat: (alpha?: number) => void;
+}
+
+const DEFAULT_TICKS_PER_FRAME = 10;
+const REHEAT_ALPHA = 0.5;
+
+/**
+ * Runs the d3-force layout for `graph` in requestAnimationFrame batches so
+ * the UI thread stays responsive while big graphs settle. Node positions live
+ * inside `layout.nodes` (mutated in place by d3); `version` ticks up each
+ * frame so consumers know when to redraw without copying thousands of
+ * positions through React state.
+ *
+ * Positions are remembered across graph changes, so a watcher-driven re-index
+ * reheats the existing shape instead of replaying the whole layout.
+ */
+export function useGraphSimulation(
+  graph: WorkspaceGraph,
+  options?: UseGraphSimulationOptions,
+): GraphSimulationState {
+  const ticksPerFrame = options?.ticksPerFrame ?? DEFAULT_TICKS_PER_FRAME;
+  const maxTicks = options?.maxTicks ?? LAYOUT_MAX_TICKS;
+  const reducedMotion = useReducedMotion();
+  const persistKey = options?.persistKey;
+  // A restored snapshot makes a return to the tab reheat gently, the way a
+  // watcher-driven re-index already does. `undefined` means "not seeded yet",
+  // so the store is read once rather than on every render.
+  const previousPositions = useRef<ReadonlyMap<string, NodePosition> | null | undefined>(undefined);
+  if (previousPositions.current === undefined) {
+    previousPositions.current = persistKey ? (loadGraphView(persistKey)?.positions ?? null) : null;
+  }
+  const persistKeyRef = useRef(persistKey);
+  persistKeyRef.current = persistKey;
+  const [version, setVersion] = useState(0);
+  const [settled, setSettled] = useState(false);
+  // rAF handle + whether a loop is in flight, so reheat can resume a settled
+  // simulation without ever stacking two loops.
+  const frameRef = useRef(0);
+  const runningRef = useRef(false);
+  // Remaining tick budget for the current pass; reheat refills it.
+  const budgetRef = useRef(maxTicks);
+
+  const layout = useMemo(
+    () => createGraphLayout(graph, previousPositions.current ?? undefined),
+    [graph],
+  );
+
+  // Off still ticks on animation frames (a synchronous pass would block the
+  // thread for seconds on a large graph); it only withholds the redraws in
+  // between, so the layout appears settled in one step. A ref, not an argument,
+  // so a reheat can upgrade a pass that is already in flight.
+  const paintEveryFrameRef = useRef(true);
+
+  const runLoop = useCallback(() => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setSettled(false);
+
+    const step = () => {
+      const done = tickLayout(layout, ticksPerFrame);
+      budgetRef.current -= ticksPerFrame;
+      const positions = capturePositions(layout);
+      previousPositions.current = positions;
+      // Written through as it changes rather than queued for unmount.
+      if (persistKeyRef.current) saveGraphView(persistKeyRef.current, { positions });
+      const finished = done || budgetRef.current <= 0;
+      if (paintEveryFrameRef.current || finished) setVersion((v) => v + 1);
+      if (finished) {
+        runningRef.current = false;
+        setSettled(true);
+        return;
+      }
+      frameRef.current = requestAnimationFrame(step);
+    };
+    frameRef.current = requestAnimationFrame(step);
+  }, [layout, ticksPerFrame]);
+
+  // Fresh layout (mount or graph change): refill the budget and run.
+  useEffect(() => {
+    budgetRef.current = maxTicks;
+    paintEveryFrameRef.current = !reducedMotion;
+    runLoop();
+    return () => {
+      cancelAnimationFrame(frameRef.current);
+      runningRef.current = false;
+      layout.simulation.stop();
+    };
+  }, [layout, maxTicks, runLoop, reducedMotion]);
+
+  const reheat = useCallback(
+    (alpha = REHEAT_ALPHA) => {
+      const sim = layout.simulation;
+      sim.alpha(Math.max(sim.alpha(), alpha));
+      // Refill the budget so a sustained drag keeps animating, then resume.
+      // Always paints, upgrading a non-painting pass if one is mid-flight: a
+      // reheat tracks the pointer, and withholding frames would freeze the
+      // node under the user's finger.
+      budgetRef.current = maxTicks;
+      paintEveryFrameRef.current = true;
+      runLoop();
+    },
+    [layout, maxTicks, runLoop],
+  );
+
+  return { layout, version, settled, reheat };
+}

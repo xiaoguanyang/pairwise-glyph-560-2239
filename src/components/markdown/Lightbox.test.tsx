@@ -1,0 +1,308 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Lightbox } from "./Lightbox";
+
+const { isFullscreen, invoke } = vi.hoisted(() => ({
+  isFullscreen: vi.fn(() => Promise.resolve(false)),
+  invoke: vi.fn(() => Promise.resolve(undefined)),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ isFullscreen }),
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+// The probe needs real layout; keep the data-URL path real, answer for .svg
+// URLs, and report no size for anything else (matching the real probe).
+vi.mock("@/lib/svgSizeFromUrl", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/svgSizeFromUrl")>();
+  return {
+    svgSizeFromUrl: vi.fn((src: string) => {
+      if (src.startsWith("data:")) return actual.svgSizeFromUrl(src);
+      return Promise.resolve(src.endsWith(".svg") ? { w: 300, h: 150 } : null);
+    }),
+  };
+});
+
+const IMAGES = [
+  { src: "a.png", alt: "first" },
+  { src: "b.png", alt: "second" },
+  { src: "c.png", alt: "third" },
+];
+
+// Drives the controlled `index` so navigation can be asserted end to end.
+function Harness({ onClose = () => {}, start = 0 }: { onClose?: () => void; start?: number }) {
+  const [index, setIndex] = useState(start);
+  return <Lightbox images={IMAGES} index={index} onIndexChange={setIndex} onClose={onClose} />;
+}
+
+describe("Lightbox", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    isFullscreen.mockClear();
+    invoke.mockClear();
+  });
+
+  it("renders the current image and a counter for multiple images", () => {
+    render(<Harness />);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByAltText("first")).toBeInTheDocument();
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+  });
+
+  it("closes on Escape", () => {
+    const onClose = vi.fn();
+    render(<Harness onClose={onClose} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("closes when the backdrop is clicked", () => {
+    const onClose = vi.fn();
+    render(<Harness onClose={onClose} />);
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("navigates with the arrow keys, clamping at the ends", () => {
+    render(<Harness />);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getByAltText("second")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+
+    // Already at the first image — left does nothing.
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+  });
+
+  it("navigates with the prev/next buttons and disables them at the ends", () => {
+    render(<Harness />);
+    expect(screen.getByLabelText("Previous image (←)")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Next image (→)"));
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("Previous image (←)")).toBeEnabled();
+  });
+
+  it("adjusts the zoom level via the toolbar and resets with actual size", () => {
+    render(<Harness />);
+    expect(screen.getByText("100%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Zoom in (+)"));
+    expect(screen.getByText("125%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Actual size (1)"));
+    expect(screen.getByText("100%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Zoom out (-)"));
+    expect(screen.getByText("80%")).toBeInTheDocument();
+  });
+
+  it("shows an image with no intrinsic size (SVG) and zooms it via transform", () => {
+    render(<Harness />);
+    const img = screen.getByAltText("first") as HTMLImageElement;
+    // jsdom reports naturalWidth/Height === 0, like an SVG with only a viewBox.
+    fireEvent.load(img);
+
+    // Visible and contained (not collapsed), and zoom scales it.
+    expect(img.style.opacity).toBe("1");
+    expect(img.style.objectFit).toBe("contain");
+    expect(img.style.transform).toBe("scale(1)");
+    // The stretched element's letterbox lets clicks through to the backdrop.
+    expect(img.style.pointerEvents).toBe("none");
+
+    fireEvent.keyDown(window, { key: "+" });
+    expect(img.style.transform).toBe("scale(1.25)");
+  });
+
+  it("recovers a layout size for an SVG data URL with only a viewBox", async () => {
+    const src = `data:image/svg+xml,${encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"></svg>',
+    )}`;
+    render(
+      <Lightbox
+        images={[{ src, alt: "diagram" }]}
+        index={0}
+        onIndexChange={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const img = screen.getByAltText("diagram") as HTMLImageElement;
+    fireEvent.load(img);
+
+    // Parsed from the markup: pixel layout (pannable when zoomed), not the
+    // transform-scale fallback.
+    await waitFor(() => expect(img.style.width).toBe("200px"));
+    expect(img.style.objectFit).toBe("");
+
+    fireEvent.keyDown(window, { key: "+" });
+    expect(img.style.width).toBe("250px");
+  });
+
+  it("sizes a viewBox-only SVG served from a URL via the aspect probe", async () => {
+    render(
+      <Lightbox
+        images={[{ src: "http://asset.localhost/diagram.svg", alt: "asset svg" }]}
+        index={0}
+        onIndexChange={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const img = screen.getByAltText("asset svg") as HTMLImageElement;
+    fireEvent.load(img);
+    await waitFor(() => expect(img.style.width).toBe("300px"));
+    expect(img.style.objectFit).toBe("");
+  });
+
+  it("goes window-fullscreen while open and restores on close", async () => {
+    const { unmount } = render(<Harness />);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_lightbox_fullscreen", { enter: true }),
+    );
+    unmount();
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_lightbox_fullscreen", { enter: false }),
+    );
+  });
+
+  it("leaves an already-fullscreen window alone", async () => {
+    isFullscreen.mockResolvedValueOnce(true);
+    const { unmount } = render(<Harness />);
+    await waitFor(() => expect(isFullscreen).toHaveBeenCalled());
+    unmount();
+    expect(invoke).not.toHaveBeenCalledWith("set_lightbox_fullscreen", { enter: true });
+    expect(invoke).not.toHaveBeenCalledWith("set_lightbox_fullscreen", { enter: false });
+  });
+
+  it("zooms with ctrl+wheel and ignores a plain wheel", () => {
+    render(<Harness />);
+    const dialog = screen.getByRole("dialog");
+    // happy-dom's WheelEvent drops the ctrlKey init field; set it explicitly.
+    const zoomWheel = new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true });
+    Object.defineProperty(zoomWheel, "ctrlKey", { value: true });
+    fireEvent(dialog, zoomWheel);
+    expect(screen.getByText("116%")).toBeInTheDocument();
+    fireEvent.wheel(dialog, { deltaY: -100 });
+    expect(screen.getByText("116%")).toBeInTheDocument();
+  });
+
+  it("renders the overlay into document.body, escaping transformed ancestors", () => {
+    const { container } = render(
+      <div style={{ transform: "scale(0.5)" }}>
+        <Harness />
+      </div>,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.parentElement).toBe(document.body);
+    expect(container.contains(dialog)).toBe(false);
+  });
+
+  it("zooms with the keyboard", () => {
+    render(<Harness />);
+    fireEvent.keyDown(window, { key: "+" });
+    expect(screen.getByText("125%")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "1" });
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("zooms in with the = key (no shift needed)", () => {
+    render(<Harness />);
+    fireEvent.keyDown(window, { key: "=" });
+    expect(screen.getByText("125%")).toBeInTheDocument();
+  });
+
+  it("zooms out and refits with the keyboard", () => {
+    render(<Harness />);
+    fireEvent.keyDown(window, { key: "+" });
+    expect(screen.getByText("125%")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "-" });
+    expect(screen.getByText("100%")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "+" });
+    fireEvent.keyDown(window, { key: "0" });
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("closes on Escape dispatched from the dialog itself", () => {
+    const onClose = vi.fn();
+    render(<Harness onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("navigates back with the prev button when past the first image", () => {
+    render(<Harness start={1} />);
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Previous image (←)"));
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+  });
+
+  it("lays out an image with intrinsic pixel size and scales its width on zoom", () => {
+    render(<Harness />);
+    const img = screen.getByAltText("first") as HTMLImageElement;
+    // Mock a real intrinsic size (jsdom reports 0 otherwise) to hit the pixel path.
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    fireEvent.load(img);
+
+    // Intrinsic branch: explicit pixel width, no object-fit contain.
+    const fitWidth = parseFloat(img.style.width);
+    expect(fitWidth).toBeGreaterThan(0);
+    expect(img.style.objectFit).toBe("");
+
+    fireEvent.keyDown(window, { key: "+" });
+    expect(parseFloat(img.style.width)).toBeCloseTo(fitWidth * 1.25);
+  });
+
+  it("recomputes the fit on window resize while fitted", () => {
+    render(<Harness />);
+    const img = screen.getByAltText("first") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    fireEvent.load(img);
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("ignores arrow keys and hides nav when there is a single image", () => {
+    render(
+      <Lightbox
+        images={[{ src: "only.png", alt: "only" }]}
+        index={0}
+        onIndexChange={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByLabelText("Next image (→)")).not.toBeInTheDocument();
+    // Arrow keys are no-ops with one image (the counter isn't shown either).
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(screen.getByAltText("only")).toBeInTheDocument();
+  });
+
+  it("ignores non-Escape keys dispatched on the dialog", () => {
+    const onClose = vi.fn();
+    render(<Harness onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "a" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("renders nothing when the index is out of range", () => {
+    const { container } = render(
+      <Lightbox images={IMAGES} index={99} onIndexChange={() => {}} onClose={() => {}} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("uses a generic label when the image has no alt text", () => {
+    render(
+      <Lightbox
+        images={[{ src: "a.png", alt: "" }]}
+        index={0}
+        onIndexChange={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("dialog", { name: "Image viewer" })).toBeInTheDocument();
+  });
+});

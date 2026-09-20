@@ -1,0 +1,56 @@
+import { createContext, useCallback, useContext } from "react";
+import type { TocEntry } from "@/hooks/useTableOfContents";
+import type { useTabs } from "@/hooks/useTabs";
+import type { WorkspaceNotice } from "@/hooks/useWorkspaceNotice";
+import { type Backlink, EMPTY_SNAPSHOT, type VaultSnapshot } from "@/lib/vault";
+
+// Context + hooks for the tabs/workspace state. Kept in a component-free module
+// so the provider file stays Fast-Refresh-eligible (a file that exports a
+// component plus a hook/context bails out of React Fast Refresh). The provider
+// lives in `TabsProvider.tsx`.
+
+type TabsApi = ReturnType<typeof useTabs>;
+
+export interface TabsContextValue extends TabsApi {
+  // Derived from the active file + edit mode. View mode renders saved content;
+  // edit/split renders the in-memory editContent so preview reflects typing.
+  displayContent: string | null;
+  tocEntries: TocEntry[];
+  backlinks: Backlink[];
+  // Notice shown for a workspace event (#262): a refusal, or a persistent
+  // warning when a folder is opened inside a parent git repo. A translation
+  // key + values so the banner re-localizes live (see WorkspaceNoticeBanner).
+  workspaceNotice: WorkspaceNotice | null;
+  dismissWorkspaceNotice: () => void;
+}
+
+export const TabsContext = createContext<TabsContextValue | null>(null);
+
+export function useTabsContext(): TabsContextValue {
+  const ctx = useContext(TabsContext);
+  if (!ctx) throw new Error("useTabsContext must be used inside <TabsProvider>");
+  return ctx;
+}
+
+// The opened workspace folder's root (or undefined when only loose files are
+// open), read straight from the tabs context. Uses optional chaining rather
+// than useTabsContext so the shared renderers (notebooks, canvas, print, and
+// isolated tests) can read it with no provider and simply skip workspace
+// resolution.
+export function useWorkspaceRoot(): string | undefined {
+  return useContext(TabsContext)?.workspace?.root;
+}
+
+// The workspace index, empty when there is no provider (the command palette
+// and the shared renderers appear in isolated tests too).
+export function useVaultSnapshot(): VaultSnapshot {
+  return useContext(TabsContext)?.snapshot ?? EMPTY_SNAPSHOT;
+}
+
+// `openGraph` bound to no arguments, for menu handlers and click handlers.
+// Passing it raw would let the event land in its optional `root`, which then
+// fails the "root matches the open workspace" guard and silently does nothing.
+export function useOpenGraph(): () => void {
+  const { openGraph } = useTabsContext();
+  return useCallback(() => openGraph(), [openGraph]);
+}

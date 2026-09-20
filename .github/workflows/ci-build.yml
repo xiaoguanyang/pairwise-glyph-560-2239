@@ -1,0 +1,303 @@
+name: Build
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, ubuntu-22.04-arm, windows-latest]
+        # Single-value dimension so `exclude` can key off the event:
+        # ARM Linux only builds on pushes to main.
+        is_pr:
+          - ${{ github.event_name == 'pull_request' }}
+        exclude:
+          - platform: ubuntu-22.04-arm
+            is_pr: true
+        include:
+          # PRs skip installer bundling and build single-arch macOS; pushes
+          # to main build the full universal/bundled artifacts.
+          - platform: macos-latest
+            args_full: "--target universal-apple-darwin"
+            args_pr: "--target aarch64-apple-darwin --no-bundle"
+            targets_full: "aarch64-apple-darwin,x86_64-apple-darwin"
+            targets_pr: "aarch64-apple-darwin"
+          - platform: ubuntu-22.04
+            # Bundle analysis is the codecov Vite plugin, which runs during
+            # the frontend build; it does not need installer packaging.
+            args_full: ""
+            # The Docker check installs this leg's .deb, so a pull request has
+            # to produce one. Only the .deb: AppImage bundling downloads
+            # linuxdeploy and is minutes of work nothing here consumes.
+            args_pr: "--bundles deb"
+            bundle_analysis: true
+          # No include entry for ubuntu-22.04-arm: include is processed
+          # AFTER exclude, so an entry here would resurrect the excluded
+          # PR leg as a new combination. Undefined args_full is ''.
+          - platform: windows-latest
+            args_full: ""
+            args_pr: "--no-bundle"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: ${{ github.event_name == 'pull_request' && matrix.targets_pr || matrix.targets_full }}
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        timeout-minutes: 8
+        uses: ./.github/actions/linux-deps
+        with:
+          cache-key: apt-webkit-${{ matrix.platform }}-v1
+          extra-packages: xdg-utils xvfb
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODECOV_TOKEN: ${{ matrix.bundle_analysis && secrets.CODECOV_TOKEN || '' }}
+        with:
+          args: ${{ github.event_name == 'pull_request' && matrix.args_pr || matrix.args_full }}
+      # Starts `glyph mcp` the way an MCP client does, on every platform and
+      # with no xvfb: the server must answer without a display, and on Windows
+      # the release binary is a GUI-subsystem program talking over pipes. A
+      # universal macOS build leaves an x86_64 binary too; sorting picks the
+      # aarch64 one the runner can execute.
+      - name: MCP handshake smoke test
+        shell: bash
+        run: node scripts/mcp-smoke.mjs "$(find src-tauri/target -path '*/release/glyph' -o -path '*/release/glyph.exe' | sort | head -n 1)" samples
+      # Records raw/gzip sizes for startup and major lazy chunks and fails on
+      # budget regressions (bundle-budgets.json, docs/bundle-budgets.md). One
+      # deterministic leg is enough: every platform ships the same frontend.
+      - name: Check bundle budgets
+        if: matrix.platform == 'ubuntu-22.04'
+        run: node scripts/check-bundle-size.mjs
+      # Handed to the Docker jobs, which install it instead of a published
+      # release so the image is tested against this checkout.
+      - name: Upload the Debian package
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: glyph-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 1
+          if-no-files-found: error
+      # Boots the real webview under the production CSP and exercises the
+      # grant-gated CLI export end to end; unit tests cannot enforce CSP.
+      - name: Headless export smoke test
+        if: matrix.platform == 'ubuntu-22.04'
+        timeout-minutes: 5
+        env:
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+        run: |
+          xvfb-run --auto-servernum ./src-tauri/target/release/glyph export "$PWD/samples" --format site --out /tmp/csp-smoke
+          test -f /tmp/csp-smoke/index.html
+          test "$(find /tmp/csp-smoke -maxdepth 1 -name '*.html' | wc -l)" -ge 3
+          # A repeat export prunes what it no longer produces, and only that.
+          # This is the only place the prune runs over real IPC and a real
+          # export-dir grant.
+          cp -r "$PWD/samples" /tmp/prune-ws
+          xvfb-run --auto-servernum ./src-tauri/target/release/glyph export /tmp/prune-ws --format site --out /tmp/prune-out
+          test -f /tmp/prune-out/Scratchpad.html
+          test -f /tmp/prune-out/.glyph/site-manifest.json
+          touch /tmp/prune-out/CNAME
+          rm /tmp/prune-ws/Scratchpad.md
+          xvfb-run --auto-servernum ./src-tauri/target/release/glyph export /tmp/prune-ws --format site --out /tmp/prune-out
+          test ! -f /tmp/prune-out/Scratchpad.html
+          test -f /tmp/prune-out/CNAME
+          # A document export renders the live DOM, so it exercises the
+          # render-readiness gate the site export never touches.
+          xvfb-run --auto-servernum ./src-tauri/target/release/glyph export "$PWD/samples/Index.md" --format html --out /tmp/doc-smoke.html
+          grep -q "<h1" /tmp/doc-smoke.html
+          xvfb-run --auto-servernum ./src-tauri/target/release/glyph export "$PWD/samples/Index.md" --format pdf --out /tmp/doc-smoke.pdf
+          test "$(stat -c%s /tmp/doc-smoke.pdf)" -gt 5000
+          # A wrong input kind is a usage error, not a silent empty export.
+          if xvfb-run --auto-servernum ./src-tauri/target/release/glyph export "$PWD/samples" --format pdf --out /tmp/nope.pdf; then
+            echo "expected a usage error for a folder given to --format pdf" >&2
+            exit 1
+          fi
+      # Drives the built binary over WebDriver (launch, render, edit, second
+      # instance) against the same release build the export smoke used. A
+      # release binary is required: the single-instance plugin is release-only.
+      # Flags on PRs (per-PR gating is a #502 follow-up "once stable"); hard-
+      # fails on pushes to main and on release, where a broken editor must stop.
+      - name: Built-app smoke test
+        id: app-smoke
+        if: matrix.platform == 'ubuntu-22.04'
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        timeout-minutes: 10
+        uses: ./.github/actions/app-smoke
+      # continue-on-error keeps the required check green on PRs, which hides a
+      # failure from the checks list; surface it as an annotation instead.
+      - name: Flag built-app smoke failure
+        if: matrix.platform == 'ubuntu-22.04' && steps.app-smoke.outcome == 'failure'
+        run: echo "::warning title=Built-app smoke failed::pnpm test:app failed; it hard-fails on pushes to main and at release."
+
+  build-android:
+    name: Android
+    # Runs on PRs too: this is the only job that compiles a `cfg(mobile)`
+    # configuration. Every other gate builds the host target, where
+    # `cfg(desktop)` is true, so mobile-only breakage is invisible to them.
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 29.0.14206865
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - uses: ./.github/actions/rust-setup
+        with:
+          targets: aarch64-linux-android
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          # The default also installs the legacy `tools` package, which the
+          # runner's cmdline-tools 16.0 no longer carries, so sdkmanager fails.
+          packages: platform-tools
+      - name: Cache NDK
+        id: ndk-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}
+      - name: Install NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: sdkmanager "ndk;${{ env.NDK_VERSION }}"
+      - run: pnpm install --frozen-lockfile
+      - name: Build Android APK (debug, aarch64)
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: pnpm tauri android build --debug --apk --target aarch64
+      - name: Upload debug APK
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: glyph-android-debug-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
+          retention-days: 14
+
+  build-ios:
+    name: iOS
+    # Simulator only: unsigned, so it needs no Apple Developer account. Device
+    # builds and IPAs require a paid signing identity and stay out of CI.
+    # The shared `cfg(mobile)` code is already covered by the Android job; what
+    # this catches is Xcode-project, Info.plist and Objective-C glue drift,
+    # which nothing else compiles.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - uses: ./.github/actions/rust-setup
+        with:
+          targets: aarch64-apple-ios-sim
+      - run: pnpm install --frozen-lockfile
+      - name: Build iOS app (debug, simulator)
+        run: pnpm tauri ios build --debug --target aarch64-sim
+
+  # The container image, built from the .deb the ubuntu-22.04 leg just
+  # produced rather than from a published release, so it tests this checkout.
+  #
+  # It used to be a standalone, path-filtered workflow that installed the
+  # newest release. That made it unrequirable, since a check that reports
+  # nothing on most pull requests blocks every merge when required, and it
+  # tested the wrong binary: a CLI change could not land in the app and in the
+  # image's default command at once, because the released binary did not
+  # understand the new command yet.
+  docker:
+    name: Docker
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/docker-image
+
+      # A ceiling, not a target. WebKitGTK and its Mesa/LLVM stack put the
+      # floor around 600 MB, so this only catches an accidental doubling, such
+      # as a purge silently no longer applying or recommends creeping back in.
+      - name: The image stays under its size ceiling
+        run: |
+          BYTES=$(docker image inspect glyph:ci --format '{{.Size}}')
+          CEILING=$((800 * 1000 * 1000))
+          echo "image size: $((BYTES / 1000 / 1000)) MB"
+          if [ "$BYTES" -gt "$CEILING" ]; then
+            echo "::error::image is $((BYTES / 1000 / 1000)) MB, over the $((CEILING / 1000 / 1000)) MB ceiling"
+            exit 1
+          fi
+
+  docker-smoke:
+    name: Docker smoke
+    # Split from the build so a broken image and a broken export are different
+    # red checks. The rebuild below is a full cache hit from the job above, so
+    # the split costs seconds rather than a second build.
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/docker-image
+        with:
+          write-cache: "false"
+
+      - name: The default command exports the mounted folder as a website
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD/samples:/docs:ro" \
+            -v "$RUNNER_TEMP/site:/out" \
+            glyph:ci
+          test -f "$RUNNER_TEMP/site/index.html"
+
+      # Writing files proves the pipeline ran; only a rendered diagram proves
+      # the webview inside the container actually worked. A broken display
+      # still produces pages, just empty ones, and this is what catches that.
+      - name: Diagrams render, not just pages
+        run: |
+          if ! grep -q "<svg" "$RUNNER_TEMP/site/Flowchart.html"; then
+            echo "::error::Flowchart.html has no inline SVG, so mermaid did not render"
+            exit 1
+          fi
+
+      - name: Exported files are owned by the caller, not root
+        run: |
+          OWNER=$(stat -c '%u' "$RUNNER_TEMP/site/index.html")
+          if [ "$OWNER" != "$(id -u)" ]; then
+            echo "::error::index.html is owned by uid $OWNER, expected $(id -u)"
+            exit 1
+          fi
+
+      - name: Arguments after the image override the default command
+        run: |
+          mkdir -p "$RUNNER_TEMP/doc"
+          # Scripts capture stdout, so it must hold the path and nothing else.
+          # Checked here, not in the build job: xvfb-run merges stderr in.
+          out=$(docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD/samples:/docs:ro" \
+            -v "$RUNNER_TEMP/doc:/out" \
+            glyph:ci export /docs/Index.md --format html --out /out/index.html)
+          test -s "$RUNNER_TEMP/doc/index.html"
+          if [ "$out" != /out/index.html ]; then
+            echo "::error::export printed '$out' to stdout, expected only the output path"
+            exit 1
+          fi
+
+      - name: A rejected export fails the step
+        run: |
+          # A folder is not a document, so this must exit nonzero rather than
+          # quietly writing nothing, which is what makes the image usable in CI.
+          if docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD/samples:/docs:ro" \
+            -v "$RUNNER_TEMP/doc:/out" \
+            glyph:ci export /docs --format pdf --out /out/nope.pdf; then
+            echo "::error::exporting a folder as pdf should have failed"
+            exit 1
+          fi

@@ -1,0 +1,379 @@
+{
+  "modal": {
+    "title": "Settings",
+    "reset": "Reset to Defaults",
+    "changesApply": "Changes apply immediately",
+    "tabs": {
+      "appearance": "Appearance",
+      "layout": "Layout",
+      "behavior": "Behavior",
+      "editor": "Editor",
+      "hotkeys": "Hotkeys",
+      "ai": "AI",
+      "print": "Print",
+      "privacy": "Privacy",
+      "markdown": "Markdown",
+      "plugins": "Plugins"
+    },
+    "close": "Close"
+  },
+  "language": {
+    "sectionTitle": "Language",
+    "label": "Display Language",
+    "system": "System"
+  },
+  "appearance": {
+    "theme": {
+      "title": "Theme",
+      "label": "Color Theme",
+      "system": "System",
+      "light": "Light",
+      "dark": "Dark"
+    },
+    "typography": {
+      "title": "Typography"
+    },
+    "fontFamily": {
+      "label": "Document Font",
+      "system": "Default",
+      "serif": "Serif",
+      "sans": "Sans-serif",
+      "mono": "Monospace",
+      "custom": "Custom"
+    },
+    "customFont": {
+      "label": "Custom Font Name",
+      "placeholder": "e.g. Inter, Lora"
+    },
+    "fontSize": {
+      "label": "Font Size"
+    },
+    "lineHeight": {
+      "label": "Line Height",
+      "compact": "Compact",
+      "normal": "Normal",
+      "relaxed": "Relaxed"
+    },
+    "contentWidth": {
+      "label": "Content Width",
+      "narrow": "Narrow",
+      "medium": "Medium",
+      "wide": "Wide",
+      "full": "Full"
+    },
+    "code": {
+      "title": "Code"
+    },
+    "codeFont": {
+      "label": "Code Font",
+      "placeholder": "Default (SF Mono, Fira Code…)"
+    },
+    "codeTheme": {
+      "label": "Code Theme",
+      "glyph": "Glyph (Default)",
+      "github": "GitHub",
+      "monokai": "Monokai",
+      "nord": "Nord",
+      "solarizedLight": "Solarized Light",
+      "solarizedDark": "Solarized Dark"
+    }
+  },
+  "layout": {
+    "title": "Sidebars",
+    "showFiles": {
+      "label": "Show Files Sidebar",
+      "description": "Workspace file tree (folder tabs only). Toggle with <kbd>Cmd/Ctrl+B</kbd>."
+    },
+    "showOutline": {
+      "label": "Show Outline Sidebar",
+      "description": "Document table of contents. Toggle with <kbd>Cmd/Ctrl+\\</kbd>."
+    },
+    "sidebarLayout": {
+      "label": "Sidebar layout",
+      "description": "Folder tabs only. <b>Split</b>: Files and Outline on opposite sides. <b>Combined</b>: stacked in one panel. <b>Beside</b>: two adjacent panels on the same side.",
+      "split": "Split",
+      "combined": "Combined",
+      "beside": "Beside"
+    },
+    "swap": {
+      "label": "Swap sidebar sides",
+      "description": "Flip which side each panel lives on. Default is Files left / Outline right; on, it becomes Files right / Outline left."
+    },
+    "filesWidth": {
+      "label": "Files Sidebar Width"
+    },
+    "outlineWidth": {
+      "label": "Outline Sidebar Width"
+    }
+  },
+  "behavior": {
+    "fileHandling": {
+      "title": "File Handling"
+    },
+    "autoReload": {
+      "label": "Auto-reload",
+      "description": "Reload file when changed on disk"
+    },
+    "autoSave": {
+      "label": "Auto Save",
+      "description": "Save edits to disk automatically"
+    },
+    "reopenLastFile": {
+      "label": "Reopen Last File",
+      "description": "Open the last viewed file on startup"
+    },
+    "confirmExternalLinks": {
+      "label": "Confirm External Links",
+      "description": "Ask before opening links in browser"
+    },
+    "recentFiles": {
+      "title": "Recent Files",
+      "clear": "Clear Recent Files"
+    }
+  },
+  "updates": {
+    "title": "Updates",
+    "check": {
+      "label": "Check for updates",
+      "description": "On launch, check for a newer release and show a banner when one is available. Only the installed version is compared; no files or personal data are sent."
+    },
+    "checking": "Checking…",
+    "checkNow": "Check Now",
+    "current": "You're on the latest version.",
+    "error": "Couldn't check for updates. Try again later.",
+    "available": "Version {{version}} is available.",
+    "download": "Download"
+  },
+  "editor": {
+    "title": "Editor",
+    "spellCheck": {
+      "title": "Spell Check",
+      "label": "Check spelling",
+      "description": "Underline misspelled words while editing. Right-click a word for suggestions. Applies to edit and split modes.",
+      "languagesLabel": "Languages",
+      "languagesDescription": "Words are checked against every enabled language. Text in scripts with no enabled dictionary is not flagged.",
+      "languages": {
+        "en": "English (US)"
+      },
+      "ignore": "Ignore",
+      "add": "Add to dictionary",
+      "noSuggestions": "No suggestions"
+    },
+    "keymap": {
+      "label": "Keymap",
+      "description": "Keyboard bindings for the markdown editor. Vim adds modal editing; VSCode mirrors common VSCode shortcuts. Takes effect the next time a document enters edit or split mode."
+    },
+    "keymapOptions": {
+      "default": "Default",
+      "vim": "Vim",
+      "vscode": "VSCode"
+    },
+    "pasteHtml": {
+      "label": "Paste HTML as Markdown",
+      "description": "When you paste rich text from a browser or another app, convert it to Markdown. Turn this off to paste the plain text instead."
+    },
+    "syncScroll": {
+      "label": "Sync split scrolling",
+      "description": "In split mode, scrolling either pane moves the other to the matching position. Turn this off to scroll each pane on its own."
+    },
+    "help": {
+      "default": {
+        "title": "Default (Glyph) shortcuts",
+        "autocomplete": "in a folder workspace opens wikilink autocomplete",
+        "accept": "accept the highlighted completion",
+        "undoRedo": "undo / redo",
+        "standard": "Standard OS text-editing shortcuts otherwise"
+      },
+      "vim": {
+        "title": "Vim quick reference",
+        "modes": "normal, insert, insert-after, visual modes",
+        "motions": "motions; f + char to jump; / to search",
+        "operators": "operators with counts and text objects (diw, ci\")",
+        "files": "File commands like :w, :q, and :wq don't apply here — Glyph autosaves, and you close a tab with the Close Tab shortcut."
+      },
+      "vscode": {
+        "title": "VSCode shortcuts",
+        "moveLine": "move the current line up / down",
+        "copyLine": "copy the line up / down",
+        "comment": "toggle line comment",
+        "multiSelect": "select the next occurrence; Cmd/Ctrl+] or [ to indent / outdent"
+      }
+    },
+    "format": {
+      "bold": "Bold",
+      "italic": "Italic",
+      "code": "Inline code",
+      "strikethrough": "Strikethrough",
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select all"
+    },
+    "search": {
+      "find": "Find",
+      "replace": "Replace",
+      "next": "next",
+      "previous": "previous",
+      "all": "all",
+      "matchCase": "match case",
+      "regexp": "regexp",
+      "byWord": "by word",
+      "replaceOne": "replace",
+      "replaceAll": "replace all",
+      "close": "close",
+      "currentMatch": "current match",
+      "onLine": "on line",
+      "replacedOnLine": "replaced match on line $",
+      "replacedMatches": "replaced $ matches"
+    }
+  },
+  "ai": {
+    "provider": {
+      "title": "AI Provider",
+      "label": "Provider",
+      "none": "None",
+      "claude": "Claude (Anthropic)",
+      "openai": "OpenAI",
+      "ollama": "Ollama (Local)"
+    },
+    "apiKey": {
+      "label": "API Key",
+      "description": "Stored in your system keychain, never in settings files.",
+      "keychainError": "Couldn't save the key to the system keychain. It stays available for this session; check that your keychain or keyring service is unlocked and try again."
+    },
+    "ollamaUrl": {
+      "label": "Ollama URL",
+      "description": "Requires OLLAMA_ORIGINS=* for CORS"
+    },
+    "model": {
+      "label": "Model",
+      "placeholder": "Select or type model name",
+      "status": {
+        "checking": "Checking the Ollama server…",
+        "ok": "Connected to Ollama. Installed models: {{count}}",
+        "error": "Cannot reach the Ollama server. Check the URL and OLLAMA_ORIGINS."
+      }
+    },
+    "tts": {
+      "title": "Text-to-Speech"
+    },
+    "voice": {
+      "label": "Voice",
+      "placeholder": "Default system voice"
+    },
+    "speed": {
+      "label": "Speed"
+    }
+  },
+  "print": {
+    "title": "Print & PDF Export",
+    "pageBreaks": {
+      "label": "Page Breaks",
+      "description": "Start a new page at heading level",
+      "none": "None",
+      "h1": "At H1",
+      "h2": "At H2"
+    },
+    "toc": {
+      "label": "Include Table of Contents",
+      "description": "Insert a contents page at the start"
+    },
+    "epubMedia": {
+      "label": "Embed Media in EPUB",
+      "description": "Package audio and video under this size into the book; larger files are named instead",
+      "off": "Off",
+      "mb": "{{limit}} MB"
+    },
+    "backgrounds": {
+      "label": "Print Backgrounds & Colors",
+      "description": "Preserve theme colors in output"
+    }
+  },
+  "privacy": {
+    "title": "Error Reporting",
+    "crashReports": {
+      "label": "Send crash reports",
+      "description": "Off by default. When on, anonymous crash reports (stack traces, OS, and app version) are sent to help fix bugs. Your files, file paths, and links are never included. Only active in production builds. See SECURITY.md for the full policy."
+    }
+  },
+  "secrets": {
+    "title": "Saved Secrets",
+    "description": "What Glyph has stored in your system keychain. Values are never shown here, only whether a slot is filled.",
+    "slots": {
+      "claude": "Claude API key",
+      "openai": "OpenAI API key"
+    },
+    "status": {
+      "saved": "Saved",
+      "notSet": "Not set",
+      "checking": "Checking…",
+      "unknown": "Couldn't be checked"
+    },
+    "add": "Add",
+    "addSlot": "Add {{slot}}",
+    "replace": "Replace",
+    "replaceSlot": "Replace {{slot}}",
+    "remove": "Remove",
+    "removeSlot": "Remove {{slot}}",
+    "save": "Save",
+    "cancel": "Cancel",
+    "placeholder": "Paste the new value",
+    "newValue": "New value for {{slot}}",
+    "errors": {
+      "read": "Couldn't read the keychain. Check that it is unlocked, then reopen Settings.",
+      "remove": "Couldn't remove the secret from the keychain.",
+      "save": "Couldn't save the secret to the keychain."
+    }
+  },
+  "hotkeys": {
+    "search": {
+      "placeholder": "Search shortcuts…",
+      "label": "Search shortcuts"
+    },
+    "conflict": "Conflicts with another shortcut",
+    "recording": "Press keys…",
+    "reset": "Reset",
+    "resetTitle": "Reset to default",
+    "aria": {
+      "recording": "Recording shortcut for {{command}}",
+      "change": "Change shortcut for {{command}}",
+      "reset": "Reset shortcut for {{command}}"
+    }
+  },
+  "markdown": {
+    "title": "Markdown Features",
+    "gfm": {
+      "label": "Tables & task lists",
+      "description": "GitHub Flavored Markdown: tables, task lists, strikethrough, autolinks"
+    },
+    "math": {
+      "label": "Math",
+      "description": "KaTeX equations: $inline$ and $$block$$"
+    },
+    "alerts": {
+      "label": "Alerts",
+      "description": "GitHub-style callouts: > [!NOTE], [!TIP], [!WARNING]"
+    },
+    "emoji": {
+      "label": "Emoji shortcodes",
+      "description": "Turn :smile: into emoji"
+    },
+    "wikilinks": {
+      "label": "Wikilinks",
+      "description": "Resolve [[note]] links against the workspace"
+    }
+  },
+  "defaultApp": {
+    "title": "Default app",
+    "label": "Default Markdown app",
+    "description": "Open Markdown files in Glyph by default.",
+    "button": "Set Glyph as default",
+    "working": "Working…",
+    "outcome": {
+      "registered": "Glyph is now your default Markdown app.",
+      "openedSettings": "Opened Default Apps settings. Choose Glyph for Markdown files.",
+      "guidance": "In Finder, right-click a Markdown file, choose Get Info, set Open With to Glyph, then Change All.",
+      "error": "Couldn't set the default app. Set it from your system settings instead."
+    }
+  }
+}

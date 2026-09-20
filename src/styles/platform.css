@@ -1,0 +1,145 @@
+/* Arabic-script faces, one @font-face family per platform. They lead every
+   stack rather than trailing it: Calibri and the Noto/Apple text faces carry
+   their own cramped Arabic, so a fallback appended at the end never runs. The
+   unicode-range keeps them off Latin, which still resolves to the platform
+   face behind them (Persian digits, Arabic-Indic digits and ZWNJ are inside
+   the ranges, so a Persian paragraph shapes in one face).
+   size-adjust is the calibration knob: Arabic body height is not the em box,
+   so an Arabic face swapped in at the same font-size reads a different size
+   than the Latin it replaced. Measured on Windows at 100px: Calibri's own
+   Arabic body is 52 against a 47 Latin x-height, Segoe UI's is 54, so 96%
+   holds Persian at the size readers see today while gaining Segoe's shaping.
+   The Apple and Noto faces are unmeasured (no macOS/Linux box here), so they
+   stay at 100%; measure and set them the same way if Persian reads off there. */
+@font-face {
+  font-family: GlyphArabic;
+  src: local("Segoe UI");
+  size-adjust: 96%;
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C;
+}
+
+@font-face {
+  font-family: GlyphArabicApple;
+  src: local("SF Arabic"), local("Geeza Pro");
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C;
+}
+
+@font-face {
+  font-family: GlyphArabicNoto;
+  src: local("Vazirmatn"), local("Noto Naskh Arabic"), local("Noto Sans Arabic");
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C;
+}
+
+:root {
+  /* Which Arabic family this platform uses. Leads --glyph-font and every
+     reading stack, including the ones built in settingsDisplay.ts. */
+  --glyph-arabic-font: GlyphArabicNoto;
+  --glyph-font: var(--glyph-arabic-font), system-ui, -apple-system, sans-serif;
+  /* Long-form reading face, per platform: whichever face that OS ships that
+     is designed for reading at body size, not the UI face. Overridden by the
+     document-font setting; see docs/brand.md. */
+  --glyph-reading-font: var(--glyph-arabic-font), Georgia, serif;
+  --glyph-radius: 6px;
+  --glyph-radius-sm: 4px;
+  --glyph-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --glyph-material-blur: 20px;
+  --glyph-sidebar-filter: none;
+  --glyph-sidebar-bg: var(--color-surface-secondary);
+  --glyph-safe-top: 0px;
+  --glyph-safe-bottom: 0px;
+  --glyph-safe-left: 0px;
+  --glyph-safe-right: 0px;
+}
+
+/* Mobile draws edge-to-edge (viewport-fit=cover), so the shell pads itself past
+   the notch, home indicator, and (in landscape) the side cutout/status bar. */
+[data-platform="ios"],
+[data-platform="android"] {
+  --glyph-arabic-font: GlyphArabicApple, GlyphArabicNoto;
+  --glyph-reading-font: var(--glyph-arabic-font), "New York", ui-serif,
+    "Noto Serif", Georgia, serif;
+  --glyph-safe-top: env(safe-area-inset-top);
+  --glyph-safe-bottom: env(safe-area-inset-bottom);
+  --glyph-safe-left: env(safe-area-inset-left);
+  --glyph-safe-right: env(safe-area-inset-right);
+}
+
+[data-platform="macos"] {
+  --glyph-arabic-font: GlyphArabicApple;
+  --glyph-font: var(--glyph-arabic-font), "SF Pro", -apple-system,
+    BlinkMacSystemFont, system-ui, sans-serif;
+  --glyph-reading-font: var(--glyph-arabic-font), -apple-system,
+    BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --glyph-radius: 8px;
+  --glyph-radius-sm: 6px;
+  --glyph-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  --glyph-sidebar-filter: blur(20px) saturate(180%);
+  --glyph-sidebar-bg: rgba(245, 245, 247, 0.8);
+}
+
+.dark[data-platform="macos"] {
+  --glyph-sidebar-bg: rgba(44, 44, 46, 0.8);
+}
+
+[data-platform="windows"] {
+  --glyph-arabic-font: GlyphArabic;
+  --glyph-font: var(--glyph-arabic-font), "Segoe UI Variable", "Segoe UI",
+    system-ui, sans-serif;
+  --glyph-reading-font: var(--glyph-arabic-font), Calibri, Constantia, Cambria,
+    Georgia, sans-serif;
+  --glyph-radius: 4px;
+  --glyph-radius-sm: 2px;
+  --glyph-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+[data-platform="linux"] {
+  --glyph-arabic-font: GlyphArabicNoto;
+  --glyph-font: var(--glyph-arabic-font), system-ui, "Ubuntu", "Cantarell",
+    sans-serif;
+  --glyph-reading-font: var(--glyph-arabic-font), "Noto Serif", "DejaVu Serif",
+    "Liberation Serif", serif;
+  --glyph-radius: 6px;
+  --glyph-radius-sm: 4px;
+  --glyph-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Comfortable tap targets on touch platforms (phone + tablet): the toolbar
+   mode buttons and outline rows are sized for a mouse on desktop, too small
+   for a fingertip here. Scoped to mobile data-platform so desktop is untouched. */
+[data-platform="android"] .mode-toggle-btn,
+[data-platform="ios"] .mode-toggle-btn {
+  width: 40px;
+  height: 40px;
+}
+
+[data-platform="android"] .outline-item,
+[data-platform="ios"] .outline-item {
+  padding-block: 10px;
+  font-size: 0.9375rem;
+}
+
+/* Bottom status bar clears the home indicator / gesture bar. env() reports 0
+   for the gesture area on Android, so a floor keeps the text off the pill. */
+.status-bar {
+  padding-bottom: var(--glyph-safe-bottom);
+}
+
+[data-platform="android"] .status-bar,
+[data-platform="ios"] .status-bar {
+  flex-wrap: wrap;
+  padding-bottom: max(var(--glyph-safe-bottom), 0.75rem);
+}
+
+/* The mobile picker path is an opaque content:// URI; drop it so the word
+   count / reading time fit the narrow bar. */
+[data-platform="android"] .status-bar-path,
+[data-platform="ios"] .status-bar-path {
+  display: none;
+}
+
+/* On mobile the outline drawer is opened from the tab-bar button, so hide the
+   thin desktop edge strip (a poor touch target). */
+[data-platform="android"] [data-sidebar-edge],
+[data-platform="ios"] [data-sidebar-edge] {
+  display: none;
+}

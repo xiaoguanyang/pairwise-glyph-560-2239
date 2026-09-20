@@ -1,0 +1,276 @@
+import { invoke } from "@tauri-apps/api/core";
+import { collectStyles } from "@/lib/export/collectStyles";
+import { escapeXml } from "@/lib/export/escape";
+import { buildHtmlDocument } from "@/lib/export/html";
+import { deriveExportMeta } from "@/lib/export/meta";
+import { restoreMermaidTheme } from "@/lib/export/rasterize";
+import { siteChromeCss, siteChromeScript } from "@/lib/export/siteChrome";
+import { isMarkdownFile } from "@/lib/markdownExtensions";
+import { basename } from "@/lib/paths";
+import type { MarkdownPlugin, SiteThemeContribution } from "@/lib/plugins/types";
+import { resolveTargets } from "@/lib/wikilinkResolutions";
+import type { FileScan } from "@/lib/workspaceScan";
+import { buildIndexBodyHtml } from "./indexPage";
+import { inlineMermaidSvgs } from "./mermaidInline";
+import { buildNavHtml } from "./nav";
+import { buildOutlineHtml } from "./outline";
+import { buildPageMetaHtml, pageDescription, pageDocumentTitle } from "./pageMeta";
+import { renderPageHtml } from "./renderPage";
+import { rehypeSiteUrls } from "./rewriteUrls";
+import { resolveSiteBranding } from "./siteBranding";
+import { parseSiteConfig, robotsTxt, SITE_CONFIG_PATH } from "./siteConfig";
+import { planSitePages } from "./sitePagePlan";
+import { encodeHref, relativeHref } from "./sitePaths";
+import { resolveSiteTheme } from "./themes";
+
+export interface ExportSiteOptions {
+  /** Absolute workspace root to export. */
+  root: string;
+  /** Absolute output directory; created if missing. */
+  outDir: string;
+  /** Determinate progress: `done` pages written out of `total`. */
+  onProgress?: (done: number, total: number) => void;
+  /** Plugin-contributed site themes, offered alongside the built-ins. */
+  themes?: readonly SiteThemeContribution[];
+  /** Plugin-contributed remark plugins, so plugin syntax renders in the export. */
+  remarkPlugins?: readonly MarkdownPlugin[];
+  /** Plugin-contributed rehype plugins, applied before the site URL rewriter. */
+  rehypePlugins?: readonly MarkdownPlugin[];
+}
+
+export interface ExportSiteResult {
+  pages: number;
+  assets: number;
+  /** Files a previous export into the same directory wrote and this one did not. */
+  removed: number;
+}
+
+const MERMAID_FENCE = /^(```|~~~)mermaid\b/m;
+
+/** Join a site-relative POSIX path onto the output directory. */
+function outPath(outDir: string, rel: string): string {
+  return `${outDir.replace(/[/\\]+$/, "")}/${rel}`;
+}
+
+/** Directory of a site-relative path, or "" for a root-level file. */
+function siteDir(rel: string): string {
+  const idx = rel.lastIndexOf("/");
+  return idx < 0 ? "" : rel.slice(0, idx);
+}
+
+/**
+ * Export a folder workspace as a browsable static site: one page per markdown
+ * file (structure preserved; the root index.*, else the root README.*, owns
+ * index.html), a shared style.css collected from the live document, per-page
+ * nav and outline, rewritten wikilinks/relative links, copied images, media
+ * and linked files, and inline Mermaid SVGs. Rendering is headless (no React mount), so every
+ * file exports with the same fidelity regardless of what is open in the app.
+ *
+ * Exporting again into the same directory prunes what the previous export
+ * wrote and this one did not, so a deleted or renamed note leaves no page
+ * behind. Only Glyph's own output is pruned; anything else in the directory
+ * (a CNAME, a .nojekyll) is left alone.
+ */
+export async function exportSite({
+  root,
+  outDir,
+  onProgress,
+  themes = [],
+  remarkPlugins = [],
+  rehypePlugins = [],
+}: ExportSiteOptions): Promise<ExportSiteResult> {
+  // `list_markdown_files` returns every openable document type; the site
+  // renders the markdown family only (notebooks, canvases, and D2 sources
+  // have their own renderers the headless pipeline can't reproduce).
+  const listed = await invoke<FileScan>("list_markdown_files", { path: root });
+  const unordered = listed.files.filter(isMarkdownFile);
+  if (unordered.length === 0) {
+    throw new Error("The workspace contains no markdown files to export.");
+  }
+
+  // Rebuild the index from disk before resolving any link. `glyph serve`
+  // re-runs this on every change but never touches the index, and a plain
+  // export may run against a backend that built one at some earlier point, so
+  // without this a note created since would be a permanently broken link and a
+  // renamed one would keep pointing at its old page.
+  await invoke("vault_refresh", { path: root });
+
+  // Site-wide metadata: optional .glyph/site.json at the root; absence is
+  // fine, a present-but-invalid file fails the export loudly. The read error
+  // string doesn't distinguish "missing" from "unreadable" portably, so any
+  // read failure falls back to defaults; parse errors still throw.
+  const rawConfig = await invoke<string>("read_file", {
+    path: `${root}/${SITE_CONFIG_PATH}`,
+  }).catch(() => null);
+  const config = parseSiteConfig(rawConfig ?? null, basename(root));
+  // Fails loudly on an unknown theme id before any rendering happens.
+  const theme = resolveSiteTheme(config.theme, themes);
+
+  const { faviconAbs, faviconRel, socialImageAbs, socialImageRel } = await resolveSiteBranding(
+    root,
+    config,
+  );
+
+  const { files, jobs, pages, sitePages, hasIndex } = await planSitePages(
+    root,
+    unordered,
+    config.title,
+  );
+
+  const total = files.length + (hasIndex ? 0 : 1);
+  onProgress?.(0, total);
+
+  const dark = document.documentElement.classList.contains("dark");
+  const assets = new Map<string, string>();
+  // The favicon and social image ship with the site, mirroring their
+  // workspace location; the shared asset-copy pass below picks them up.
+  if (faviconAbs !== null && faviconRel !== null) assets.set(faviconAbs, faviconRel);
+  if (socialImageAbs !== null && socialImageRel !== null) {
+    assets.set(socialImageAbs, socialImageRel);
+  }
+  // Every site-relative path this export puts on disk, in write order. Handed
+  // to the pruner at the end so the files a previous export left behind for
+  // content that no longer exists are removed.
+  const written: string[] = [];
+  const madeDirs = new Set<string>();
+  const ensureDir = async (rel: string) => {
+    const dir = siteDir(rel);
+    if (madeDirs.has(dir)) return;
+    madeDirs.add(dir);
+    await invoke("create_dir_all", { path: dir === "" ? outDir : outPath(outDir, dir) });
+  };
+
+  // Every page carries the site header: the site title linking home. Themes
+  // style it (.glyph-site-header). Closes over the config, so it stays a
+  // local rather than a lib helper.
+  const buildHeaderHtml = (rel: string) =>
+    `<header class="glyph-site-header"><a href="${escapeXml(encodeHref(relativeHref(rel, "index.html")))}">${escapeXml(config.title)}</a></header>`;
+
+  const writePage = async (
+    rel: string,
+    bodyHtml: string,
+    title: string,
+    description: string | null,
+  ) => {
+    const isIndex = rel === "index.html";
+    const html = buildHtmlDocument({
+      bodyHtml,
+      title: pageDocumentTitle(title, config.title, isIndex),
+      css: "",
+      dark,
+      // Pages share one stylesheet and one theme script (all pages carry the
+      // same chrome); only the body markup is per-page.
+      stylesheetHref: relativeHref(rel, "style.css"),
+      scriptHref: relativeHref(rel, "site.js"),
+      navHtml: buildNavHtml(sitePages, rel),
+      outlineHtml: buildOutlineHtml(bodyHtml),
+      headerHtml: buildHeaderHtml(rel),
+      headHtml: buildPageMetaHtml({
+        siteTitle: config.title,
+        pageTitle: title,
+        isIndex,
+        description,
+        pageRel: rel,
+        baseUrl: config.baseUrl,
+        faviconRel,
+        socialImageRel,
+      }),
+    });
+    await ensureDir(rel);
+    await invoke("write_file", { path: outPath(outDir, rel), content: html });
+    written.push(rel);
+  };
+
+  let done = 0;
+  let copied = 0;
+  let removed = 0;
+  let usedMermaid = false;
+  try {
+    for (const { file, content, rel: pageRel } of jobs) {
+      let body = await renderPageHtml({
+        content,
+        // Resolved per page: the exported site links notes to each other the
+        // same way the viewer does, through the one index.
+        resolutions: await resolveTargets(root, file, content),
+        extraRemark: remarkPlugins,
+        // The URL rewriter runs last so links emitted by plugin rehype plugins
+        // are relativized like every other in-document link.
+        extraRehype: [
+          ...rehypePlugins,
+          [rehypeSiteUrls, { filePath: file, pageRel, root, pages, assets }],
+        ],
+      });
+      if (MERMAID_FENCE.test(content)) {
+        usedMermaid = true;
+        body = await inlineMermaidSvgs(body);
+      }
+      await writePage(
+        pageRel,
+        body,
+        deriveExportMeta(file, content).title,
+        pageDescription(content, config.description),
+      );
+      done++;
+      onProgress?.(done, total);
+    }
+
+    if (!hasIndex) {
+      await writePage(
+        "index.html",
+        buildIndexBodyHtml(config.title, sitePages),
+        config.title,
+        pageDescription("", config.description),
+      );
+      done++;
+      onProgress?.(done, total);
+    }
+
+    for (const [src, destRel] of assets) {
+      await ensureDir(destRel);
+      try {
+        await invoke("copy_file", { src, dest: outPath(outDir, destRel) });
+        copied++;
+        written.push(destRel);
+      } catch (err) {
+        // A reference to something missing on disk is already broken in the
+        // app; the exported page carries a broken reference too, rather than
+        // the whole export failing on it.
+        console.error(`Failed to copy asset ${src}:`, err);
+      }
+    }
+
+    // Collected last so stylesheets loaded during rendering (KaTeX) are in.
+    // The chrome CSS and theme script live in shared files rather than being
+    // repeated inline in every page.
+    await ensureDir("style.css");
+    await invoke("write_file", {
+      path: outPath(outDir, "style.css"),
+      content: `${collectStyles()}\n${siteChromeCss()}\n${theme.css}`,
+    });
+    written.push("style.css");
+    await invoke("write_file", { path: outPath(outDir, "site.js"), content: siteChromeScript() });
+    written.push("site.js");
+    if (config.robots !== null) {
+      await invoke("write_file", {
+        path: outPath(outDir, "robots.txt"),
+        content: robotsTxt(config.robots),
+      });
+      written.push("robots.txt");
+    }
+
+    // Last, so a failed export leaves the previous build's files (and its
+    // manifest) alone rather than pruning against a half-written site.
+    try {
+      removed = await invoke<number>("prune_export_dir", { outDir, written });
+    } catch (err) {
+      // Cleanup, not part of producing the site: the pages and assets are all
+      // on disk, so a failure here leaves stale files behind rather than
+      // failing an export that succeeded.
+      console.error("Failed to prune stale files from the export:", err);
+    }
+  } finally {
+    if (usedMermaid) await restoreMermaidTheme(dark);
+  }
+
+  return { pages: done, assets: copied, removed };
+}

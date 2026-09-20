@@ -1,0 +1,50 @@
+name: Checks
+
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # Supply-chain guard: third-party actions must be pinned to an immutable
+      # commit SHA (see CONTRIBUTING.md). Local `./…` actions are exempt.
+      - name: Verify actions are pinned to commit SHAs
+        run: |
+          if grep -rnE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+[^./]' \
+               .github/workflows .github/actions | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then
+            echo "::error::Action above is not pinned. Use owner/repo@<40-char SHA> # vX.Y.Z"
+            exit 1
+          fi
+      - uses: ./.github/actions/pnpm-setup
+      - run: pnpm install --frozen-lockfile
+      - name: Biome lint
+        run: npx @biomejs/biome lint --error-on-warnings --reporter=github src/
+      - name: Biome format check
+        run: npx @biomejs/biome format --error-on-warnings --reporter=github src/
+
+  actionlint:
+    # Catches workflow syntax/expression errors per PR instead of live in a
+    # release run (see #504).
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        with:
+          # The action downloads the actionlint binary at runtime; pin it so
+          # the executed tool is as immutable as the SHA-pinned wrapper.
+          version: 1.7.12
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - run: pnpm install --frozen-lockfile
+      - name: Add TypeScript problem matcher
+        run: echo "::add-matcher::.github/matchers/tsc.json"
+      - run: pnpm typecheck

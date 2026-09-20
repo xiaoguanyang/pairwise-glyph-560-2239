@@ -1,0 +1,237 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { type ReactNode, useState } from "react";
+import { describe, expect, it, vi } from "vitest";
+import { SettingsContext, type SettingsContextValue } from "@/contexts/SettingsContext";
+import { DEFAULT_SETTINGS } from "@/lib/settings";
+import { SettingsModal, type SettingsTabId } from "./SettingsModal";
+
+// The Privacy tab's Secrets section asks the backend which keychain slots are
+// filled; nothing is stored in these tests.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(false) }));
+// The Plugins tab has its own suite; here it only needs to mount.
+vi.mock("@/components/plugins/PluginsTab", () => ({ PluginsTab: () => <div>plugins tab</div> }));
+
+// The tab is controlled by the opener in production (useAppModals), so the
+// tab-switch cases drive it through that same shape.
+function Controlled({
+  onClose,
+  initial = "appearance",
+}: {
+  onClose: () => void;
+  initial?: SettingsTabId;
+}) {
+  const [tab, setTab] = useState<SettingsTabId>(initial);
+  return <SettingsModal open tab={tab} onTabChange={setTab} onClose={onClose} />;
+}
+
+function withSettings(overrides: Partial<SettingsContextValue> = {}) {
+  const value: SettingsContextValue = {
+    settings: DEFAULT_SETTINGS,
+    updateSettings: vi.fn(),
+    resetSettings: vi.fn(),
+    flushSettings: async () => true,
+    loaded: true,
+    ...overrides,
+  };
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
+  );
+  return { value, wrapper };
+}
+
+describe("SettingsModal", () => {
+  it("renders nothing when closed", () => {
+    const { wrapper } = withSettings();
+    const { container } = render(
+      <SettingsModal open={false} onClose={vi.fn()} tab="appearance" onTabChange={vi.fn()} />,
+      {
+        wrapper,
+      },
+    );
+    expect(container.querySelector(".settings-overlay")).toBeNull();
+  });
+
+  it("renders the modal with all top-level tabs when open", () => {
+    const { wrapper } = withSettings();
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+
+    expect(screen.getByText("Appearance")).toBeInTheDocument();
+    expect(screen.getByText("Layout")).toBeInTheDocument();
+    expect(screen.getByText("Behavior")).toBeInTheDocument();
+    expect(screen.getByText("Editor")).toBeInTheDocument();
+    expect(screen.getByText("Hotkeys")).toBeInTheDocument();
+    expect(screen.getByText("AI")).toBeInTheDocument();
+    expect(screen.getByText("Print")).toBeInTheDocument();
+    expect(screen.getByText("Privacy")).toBeInTheDocument();
+    expect(screen.getByText("Plugins")).toBeInTheDocument();
+  });
+
+  it("opens on the tab the opener picked, so Manage Plugins lands on Plugins", () => {
+    const { wrapper } = withSettings();
+    render(<Controlled onClose={vi.fn()} initial="plugins" />, { wrapper });
+    expect(screen.getByText("plugins tab")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Appearance"));
+    expect(screen.queryByText("plugins tab")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Plugins"));
+    expect(screen.getByText("plugins tab")).toBeInTheDocument();
+    // Reset only touches app settings, so it is hidden under the plugin list.
+    expect(screen.queryByText("Reset to Defaults")).not.toBeInTheDocument();
+  });
+
+  it("renders each tab's content when selected", async () => {
+    const { wrapper } = withSettings();
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+
+    fireEvent.click(screen.getByText("Layout"));
+    expect(screen.getByText("Sidebars")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Behavior"));
+    expect(screen.getByText("Auto-reload")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Markdown"));
+    expect(screen.getByText("Markdown Features")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Editor"));
+    expect(screen.getByText("Keymap")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Hotkeys"));
+    expect(screen.getByText("Open File")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("AI"));
+    expect(screen.getByText("AI Provider")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Print"));
+    expect(screen.getByText("Print & PDF Export")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Privacy"));
+    expect(screen.getByText("Error Reporting")).toBeInTheDocument();
+    // Let the Secrets section's presence lookup settle before unmounting.
+    expect(await screen.findAllByText("Not set")).toHaveLength(2);
+  });
+
+  it("calls onClose when Escape is pressed", () => {
+    const onClose = vi.fn();
+    const { wrapper } = withSettings();
+    render(<Controlled onClose={onClose} />, { wrapper });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call onClose on other keys", () => {
+    const onClose = vi.fn();
+    const { wrapper } = withSettings();
+    render(<Controlled onClose={onClose} />, { wrapper });
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("handles keydown on the dialog overlay (Escape closes, other keys do not)", () => {
+    const onClose = vi.fn();
+    const { wrapper } = withSettings();
+    const { container } = render(<Controlled onClose={onClose} />, { wrapper });
+    const overlay = container.querySelector(".settings-overlay") as Element;
+
+    fireEvent.keyDown(overlay, { key: "Enter" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(overlay, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("calls onClose when the backdrop is clicked but not when content is clicked", () => {
+    const onClose = vi.fn();
+    const { wrapper } = withSettings();
+    const { container } = render(<Controlled onClose={onClose} />, {
+      wrapper,
+    });
+
+    const overlay = container.querySelector(".settings-overlay");
+    fireEvent.click(overlay as Element);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    onClose.mockClear();
+    fireEvent.click(screen.getByText("Appearance"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("invokes updateSettings when an Appearance segmented control changes", () => {
+    const updateSettings = vi.fn();
+    const { wrapper } = withSettings({ updateSettings });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+
+    fireEvent.click(screen.getByText("Dark"));
+    expect(updateSettings).toHaveBeenCalledWith("appearance.theme", "dark");
+  });
+
+  it("clears recent files via the Behavior tab", () => {
+    const updateSettings = vi.fn();
+    const { wrapper } = withSettings({
+      updateSettings,
+      settings: {
+        ...DEFAULT_SETTINGS,
+        behavior: { ...DEFAULT_SETTINGS.behavior, recentFiles: ["/p/a.md", "/p/b.md"] },
+      },
+    });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+
+    fireEvent.click(screen.getByText("Behavior"));
+    fireEvent.click(screen.getByText(/Clear Recent Files/i));
+    expect(updateSettings).toHaveBeenCalledWith("behavior.recentFiles", []);
+  });
+
+  it("toggles error reporting from the Privacy tab", async () => {
+    const updateSettings = vi.fn();
+    const { wrapper } = withSettings({ updateSettings });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+
+    fireEvent.click(screen.getByText("Privacy"));
+    expect(screen.getByText("Send crash reports")).toBeInTheDocument();
+    await screen.findAllByText("Not set");
+
+    const toggle = screen.getByRole("checkbox");
+    fireEvent.click(toggle);
+    expect(updateSettings).toHaveBeenCalledWith("privacy.errorReporting", true);
+  });
+
+  it("shows the custom font input when the font family is custom", () => {
+    const { wrapper } = withSettings({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        appearance: { ...DEFAULT_SETTINGS.appearance, fontFamily: "custom" },
+      },
+    });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+    expect(screen.getByText("Custom Font Name")).toBeInTheDocument();
+  });
+
+  it("shows the API key field for cloud AI providers", () => {
+    const { wrapper } = withSettings({
+      settings: { ...DEFAULT_SETTINGS, ai: { ...DEFAULT_SETTINGS.ai, provider: "claude" } },
+    });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+    fireEvent.click(screen.getByText("AI"));
+    expect(screen.getByText("API Key")).toBeInTheDocument();
+    expect(screen.getByText("Model")).toBeInTheDocument();
+  });
+
+  it("shows the Ollama URL field for the local provider", () => {
+    const { wrapper } = withSettings({
+      settings: { ...DEFAULT_SETTINGS, ai: { ...DEFAULT_SETTINGS.ai, provider: "ollama" } },
+    });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+    fireEvent.click(screen.getByText("AI"));
+    expect(screen.getByText("Ollama URL")).toBeInTheDocument();
+  });
+
+  it("calls resetSettings from the footer Reset button", () => {
+    const resetSettings = vi.fn();
+    const { wrapper } = withSettings({ resetSettings });
+    render(<Controlled onClose={vi.fn()} />, { wrapper });
+
+    fireEvent.click(screen.getByText("Reset to Defaults"));
+    expect(resetSettings).toHaveBeenCalled();
+  });
+});

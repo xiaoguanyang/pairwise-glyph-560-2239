@@ -1,0 +1,1099 @@
+//! Create, rename, and delete entries from the file-tree menu.
+//!
+//! Every path is validated to live inside the workspace `root` (after
+//! canonicalization) so a crafted `dir`/`path` can't touch anything outside the
+//! open workspace. New entries get collision-safe default names; the frontend
+//! then lets the user rename them inline, and confirms before deleting.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use tauri::State;
+
+use crate::grants::GrantRegistry;
+use crate::vault::{relocate, Relink, VaultStore};
+
+const DEFAULT_NOTE_STEM: &str = "Untitled";
+const DEFAULT_FOLDER_NAME: &str = "Untitled Folder";
+/// A blank but spec-valid JSON Canvas, so the new file opens as an empty board
+/// rather than tripping the parser.
+const EMPTY_CANVAS: &str = "{\n\t\"nodes\": [],\n\t\"edges\": []\n}\n";
+
+/// Ensure `target_parent` resolves to a directory inside `root`. Both are
+/// canonicalized so `..` segments and symlinks can't escape the workspace.
+fn ensure_dir_within_root(target_parent: &Path, root: &Path) -> Result<(), String> {
+    let parent = target_parent
+        .canonicalize()
+        .map_err(|e| format!("Invalid directory: {e}"))?;
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("Invalid workspace root: {e}"))?;
+    if !parent.starts_with(&root) {
+        return Err("Refusing to write outside the workspace".to_string());
+    }
+    Ok(())
+}
+
+/// Canonicalize an existing `target` and require it to sit strictly inside
+/// `root`. Checking only the parent is not enough: `<root>/..` has parent
+/// `<root>` and would pass, and a symlink inside the workspace can resolve to
+/// a path outside it.
+fn ensure_entry_inside_root(target: &Path, root: &Path) -> Result<PathBuf, String> {
+    let canonical = target
+        .canonicalize()
+        .map_err(|e| format!("Invalid path: {e}"))?;
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("Invalid workspace root: {e}"))?;
+    if canonical == root || !canonical.starts_with(&root) {
+        return Err("Refusing to write outside the workspace".to_string());
+    }
+    Ok(canonical)
+}
+
+/// Pick the first non-colliding name in `dir` built from `stem`/`ext`:
+/// `Untitled.md`, `Untitled 1.md`, … (or `Untitled Folder`, `Untitled Folder 1`).
+fn unique_path(dir: &Path, stem: &str, ext: Option<&str>) -> PathBuf {
+    let build = |name: String| -> PathBuf {
+        match ext {
+            Some(ext) => dir.join(format!("{name}.{ext}")),
+            None => dir.join(name),
+        }
+    };
+    let mut candidate = build(stem.to_string());
+    let mut n = 1;
+    while candidate.exists() {
+        candidate = build(format!("{stem} {n}"));
+        n += 1;
+    }
+    candidate
+}
+
+/// Reduce a user-typed name to a single safe path component: drops directory
+/// separators and characters that are illegal on Windows, trims whitespace.
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+#[tauri::command]
+pub fn create_note(
+    dir: String,
+    root: String,
+    grants: State<'_, GrantRegistry>,
+) -> Result<String, String> {
+    let root = grants.ensure_workspace(&root)?;
+    let dir = Path::new(&dir);
+    ensure_dir_within_root(dir, &root)?;
+    let path = unique_path(dir, DEFAULT_NOTE_STEM, Some("md"));
+    fs::write(&path, "").map_err(|e| format!("Failed to create note: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn create_canvas(
+    dir: String,
+    root: String,
+    grants: State<'_, GrantRegistry>,
+) -> Result<String, String> {
+    let root = grants.ensure_workspace(&root)?;
+    let dir = Path::new(&dir);
+    ensure_dir_within_root(dir, &root)?;
+    let path = unique_path(dir, DEFAULT_NOTE_STEM, Some("canvas"));
+    fs::write(&path, EMPTY_CANVAS).map_err(|e| format!("Failed to create canvas: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn create_folder(
+    dir: String,
+    root: String,
+    grants: State<'_, GrantRegistry>,
+) -> Result<String, String> {
+    let root = grants.ensure_workspace(&root)?;
+    let dir = Path::new(&dir);
+    ensure_dir_within_root(dir, &root)?;
+    let path = unique_path(dir, DEFAULT_FOLDER_NAME, None);
+    fs::create_dir(&path).map_err(|e| format!("Failed to create folder: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Rename `path` to `new_name` within the same directory, rewriting the links
+/// the rename would break. The extension of the original file is preserved when
+/// the typed name doesn't carry one (so "My Note" stays a `.md` file). Reports
+/// the final (collision-safe) path; a dry run reports it without renaming or writing.
+#[tauri::command]
+pub async fn rename_path(
+    path: String,
+    new_name: String,
+    root: String,
+    dry_run: bool,
+    grants: State<'_, GrantRegistry>,
+    store: State<'_, VaultStore>,
+) -> Result<Relink, String> {
+    let root_dir = grants.ensure_workspace(&root)?;
+    let source = Path::new(&path);
+    ensure_entry_inside_root(source, &root_dir)?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Path has no parent directory".to_string())?;
+
+    let sanitized = sanitize_name(&new_name);
+    if sanitized.is_empty() {
+        return Err("Name is empty".to_string());
+    }
+
+    // Preserve the source extension when the typed name omits one and the source
+    // is a file (folders never get an extension).
+    let typed = Path::new(&sanitized);
+    let (stem, ext) = if typed.extension().is_none() && source.is_file() {
+        (
+            sanitized.as_str(),
+            source.extension().and_then(|e| e.to_str()),
+        )
+    } else {
+        let stem = typed
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&sanitized);
+        (stem, typed.extension().and_then(|e| e.to_str()))
+    };
+
+    // Renaming to the current name (including typing it without its extension) is
+    // a no-op; return before unique_path would bump it to "<name> 1".
+    let desired = match ext {
+        Some(ext) => parent.join(format!("{stem}.{ext}")),
+        None => parent.join(stem),
+    };
+    if desired == source {
+        return Ok(Relink::unmoved(path));
+    }
+
+    let target = unique_path(parent, stem, ext);
+    relocate(&root, source, &target, dry_run, &grants, &store)
+}
+
+fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        // A symlink could point anywhere; refuse rather than copy its target
+        // into the workspace (and rather than skip it silently, INV-7).
+        if kind.is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "{} is a symlink",
+                entry.file_name().to_string_lossy()
+            )));
+        }
+        if kind.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest)?;
+        } else {
+            fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// Duplicate a note or folder next to itself: `Note.md` → `Note copy.md`
+/// (`Note copy 1.md` on collision), `Folder` → `Folder copy`. Returns the new
+/// path. Folders are copied recursively. Validated to stay inside `root`.
+#[tauri::command]
+pub fn duplicate_path(
+    path: String,
+    root: String,
+    grants: State<'_, GrantRegistry>,
+) -> Result<String, String> {
+    let root = grants.ensure_workspace(&root)?;
+    let source = Path::new(&path);
+    ensure_entry_inside_root(source, &root)?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Path has no parent directory".to_string())?;
+
+    let ext = source.extension().and_then(|e| e.to_str());
+    let stem = if ext.is_some() {
+        source.file_stem().and_then(|s| s.to_str())
+    } else {
+        source.file_name().and_then(|s| s.to_str())
+    }
+    .ok_or_else(|| "Invalid file name".to_string())?;
+
+    let dest = unique_path(parent, &format!("{stem} copy"), ext);
+    if source.is_dir() {
+        if let Err(e) = copy_dir_recursive(source, &dest) {
+            let _ = fs::remove_dir_all(&dest);
+            return Err(format!("Failed to duplicate folder: {e}"));
+        }
+    } else {
+        fs::copy(source, &dest).map_err(|e| format!("Failed to duplicate: {e}"))?;
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// Move a note or folder into `to_dir` (same name, collision-safe), rewriting
+/// the links the move would break. Both the source's parent and the destination
+/// must be inside `root`, and a folder can't be moved into itself or a
+/// descendant. A move into the current directory is a no-op that reports the
+/// original path; a dry run reports without moving or writing.
+#[tauri::command]
+pub async fn move_path(
+    from: String,
+    to_dir: String,
+    root: String,
+    dry_run: bool,
+    grants: State<'_, GrantRegistry>,
+    store: State<'_, VaultStore>,
+) -> Result<Relink, String> {
+    let root_dir = grants.ensure_workspace(&root)?;
+    let source = Path::new(&from);
+    let dest_dir = Path::new(&to_dir);
+    let source_abs = ensure_entry_inside_root(source, &root_dir)?;
+    ensure_dir_within_root(dest_dir, &root_dir)?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Path has no parent directory".to_string())?;
+
+    let dest_abs = dest_dir
+        .canonicalize()
+        .map_err(|e| format!("Invalid destination: {e}"))?;
+    if dest_abs == source_abs || dest_abs.starts_with(&source_abs) {
+        return Err("Can't move an item into itself".to_string());
+    }
+    // Moving into the current parent is a no-op.
+    if parent.canonicalize().ok() == Some(dest_abs) {
+        return Ok(Relink::unmoved(from));
+    }
+
+    let name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid file name".to_string())?;
+    let typed = Path::new(name);
+    let target = if let Some(ext) = typed.extension().and_then(|e| e.to_str()) {
+        let stem = typed.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+        unique_path(dest_dir, stem, Some(ext))
+    } else {
+        unique_path(dest_dir, name, None)
+    };
+
+    relocate(&root, source, &target, dry_run, &grants, &store)
+}
+
+/// Permanently delete a note or folder. The frontend always confirms first.
+/// Folders are removed recursively. Validated to stay inside `root`.
+#[tauri::command]
+pub fn delete_path(
+    path: String,
+    root: String,
+    grants: State<'_, GrantRegistry>,
+) -> Result<(), String> {
+    let root = grants.ensure_workspace(&root)?;
+    let target = Path::new(&path);
+    ensure_entry_inside_root(target, &root)?;
+    if target.is_dir() {
+        fs::remove_dir_all(target).map_err(|e| format!("Failed to delete folder: {e}"))
+    } else {
+        fs::remove_file(target).map_err(|e| format!("Failed to delete: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tauri::async_runtime::block_on;
+    use tauri::test::{mock_app, MockRuntime};
+    use tauri::Manager;
+
+    fn app_with_root(root: &str) -> tauri::App<MockRuntime> {
+        let app = mock_app();
+        app.manage(GrantRegistry::default());
+        app.manage(VaultStore::default());
+        app.state::<GrantRegistry>()
+            .grant_workspace(Path::new(root))
+            .unwrap();
+        app
+    }
+
+    // Local wrappers shadow the real commands (local items win over the
+    // `use super::*` glob) so the pre-grant test bodies stay unchanged.
+    fn create_note(dir: String, root: String) -> Result<String, String> {
+        let app = app_with_root(&root);
+        super::create_note(dir, root, app.state::<GrantRegistry>())
+    }
+
+    fn create_canvas(dir: String, root: String) -> Result<String, String> {
+        let app = app_with_root(&root);
+        super::create_canvas(dir, root, app.state::<GrantRegistry>())
+    }
+
+    fn create_folder(dir: String, root: String) -> Result<String, String> {
+        let app = app_with_root(&root);
+        super::create_folder(dir, root, app.state::<GrantRegistry>())
+    }
+
+    fn rename_path(path: String, new_name: String, root: String) -> Result<String, String> {
+        let app = app_with_root(&root);
+        let (grants, store) = (app.state::<GrantRegistry>(), app.state::<VaultStore>());
+        block_on(super::rename_path(
+            path, new_name, root, false, grants, store,
+        ))
+        .map(|done| done.new_path)
+    }
+
+    fn duplicate_path(path: String, root: String) -> Result<String, String> {
+        let app = app_with_root(&root);
+        super::duplicate_path(path, root, app.state::<GrantRegistry>())
+    }
+
+    fn move_path(from: String, to_dir: String, root: String) -> Result<String, String> {
+        let app = app_with_root(&root);
+        let (grants, store) = (app.state::<GrantRegistry>(), app.state::<VaultStore>());
+        block_on(super::move_path(from, to_dir, root, false, grants, store))
+            .map(|done| done.new_path)
+    }
+
+    fn delete_path(path: String, root: String) -> Result<(), String> {
+        let app = app_with_root(&root);
+        super::delete_path(path, root, app.state::<GrantRegistry>())
+    }
+
+    #[test]
+    fn delete_path_refuses_the_workspace_parent_named_via_dot_dot() {
+        let outer = unique_tmp("delete_parent");
+        let ws = outer.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(outer.join("sibling.txt"), "keep").unwrap();
+        let root = ws.to_string_lossy().to_string();
+        // `<ws>/..` has parent `<ws>`, so a parent-only check would let
+        // remove_dir_all run on the directory that contains the workspace.
+        let evil = ws.join("..").to_string_lossy().to_string();
+
+        let err = delete_path(evil, root.clone()).unwrap_err();
+
+        assert!(err.contains("outside the workspace"));
+        assert!(outer.join("sibling.txt").exists());
+        // The root itself is not a deletable entry either.
+        assert!(delete_path(root.clone(), root).is_err());
+        assert!(ws.exists());
+        let _ = fs::remove_dir_all(&outer);
+    }
+
+    #[test]
+    fn mutating_commands_refuse_the_workspace_parent_named_via_dot_dot() {
+        let outer = unique_tmp("mutate_parent");
+        let ws = outer.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let root = ws.to_string_lossy().to_string();
+        let evil = ws.join("..").to_string_lossy().to_string();
+
+        assert!(rename_path(evil.clone(), "x".to_string(), root.clone()).is_err());
+        assert!(duplicate_path(evil.clone(), root.clone()).is_err());
+        assert!(move_path(evil, root.clone(), root).is_err());
+        assert!(outer.exists());
+        let _ = fs::remove_dir_all(&outer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutating_commands_refuse_a_symlink_source_that_resolves_outside() {
+        let outer = unique_tmp("symlink_source");
+        let ws = outer.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(outer.join("secret.txt"), "s").unwrap();
+        std::os::unix::fs::symlink(outer.join("secret.txt"), ws.join("link.txt")).unwrap();
+        let root = ws.to_string_lossy().to_string();
+        let link = ws.join("link.txt").to_string_lossy().to_string();
+
+        assert!(rename_path(link.clone(), "x".to_string(), root.clone()).is_err());
+        assert!(duplicate_path(link.clone(), root.clone()).is_err());
+        assert!(move_path(link.clone(), root.clone(), root.clone()).is_err());
+        assert!(delete_path(link, root).is_err());
+        assert!(!ws.join("link copy.txt").exists());
+        assert!(outer.join("secret.txt").exists());
+        let _ = fs::remove_dir_all(&outer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_path_refuses_a_folder_containing_a_symlink() {
+        let outer = unique_tmp("dup_folder_symlink");
+        let ws = outer.join("ws");
+        let docs = ws.join("Docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(outer.join("secret.txt"), "s").unwrap();
+        fs::write(docs.join("a.md"), "a").unwrap();
+        std::os::unix::fs::symlink(outer.join("secret.txt"), docs.join("link.md")).unwrap();
+        let root = ws.to_string_lossy().to_string();
+
+        let err = duplicate_path(docs.to_string_lossy().to_string(), root).unwrap_err();
+
+        assert!(err.contains("symlink"), "{err}");
+        // No half-copied folder is left behind.
+        assert!(!ws.join("Docs copy").exists());
+        let _ = fs::remove_dir_all(&outer);
+    }
+
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) {
+        // Junctions are the Windows escape vector symlinks are on unix, and
+        // unlike symlinks they need no privilege to create.
+        let output = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("cmd should run");
+        assert!(output.status.success(), "mklink /J failed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_sources_and_entries_are_refused() {
+        let outer = unique_tmp("junction");
+        let ws = outer.join("ws");
+        let docs = ws.join("Docs");
+        let secret = outer.join("secret");
+        fs::create_dir_all(&docs).unwrap();
+        fs::create_dir_all(&secret).unwrap();
+        fs::write(secret.join("secret.md"), "s").unwrap();
+        junction(&ws.join("innocent"), &secret);
+        junction(&docs.join("nested"), &secret);
+        let root = ws.to_string_lossy().to_string();
+        let link = ws.join("innocent").to_string_lossy().to_string();
+
+        assert!(rename_path(link.clone(), "x".to_string(), root.clone()).is_err());
+        assert!(duplicate_path(link.clone(), root.clone()).is_err());
+        assert!(move_path(link.clone(), root.clone(), root.clone()).is_err());
+        assert!(delete_path(link, root.clone()).is_err());
+        let err = duplicate_path(docs.to_string_lossy().to_string(), root).unwrap_err();
+
+        assert!(err.contains("symlink"), "{err}");
+        assert!(!ws.join("Docs copy").exists());
+        assert!(secret.join("secret.md").exists());
+        let _ = fs::remove_dir_all(&outer);
+    }
+
+    fn unique_tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "glyph_create_{}_{}_{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn create_note_makes_untitled_md() {
+        let dir = unique_tmp("note");
+        let root = dir.to_string_lossy().to_string();
+        let path = create_note(root.clone(), root.clone()).unwrap();
+        assert!(path.ends_with("Untitled.md"));
+        assert!(Path::new(&path).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_canvas_makes_untitled_canvas_with_blank_board() {
+        let dir = unique_tmp("canvas");
+        let root = dir.to_string_lossy().to_string();
+        let path = create_canvas(root.clone(), root.clone()).unwrap();
+        assert!(path.ends_with("Untitled.canvas"));
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("\"nodes\""));
+        assert!(contents.contains("\"edges\""));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_note_dedupes_on_collision() {
+        let dir = unique_tmp("note_dupe");
+        let root = dir.to_string_lossy().to_string();
+        let first = create_note(root.clone(), root.clone()).unwrap();
+        let second = create_note(root.clone(), root.clone()).unwrap();
+        assert!(first.ends_with("Untitled.md"));
+        assert!(second.ends_with("Untitled 1.md"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_folder_makes_untitled_folder() {
+        let dir = unique_tmp("folder");
+        let root = dir.to_string_lossy().to_string();
+        let path = create_folder(root.clone(), root.clone()).unwrap();
+        assert!(path.ends_with("Untitled Folder"));
+        assert!(Path::new(&path).is_dir());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_in_subdir_within_root_is_allowed() {
+        let root = unique_tmp("sub_root");
+        let sub = root.join("notes");
+        fs::create_dir(&sub).unwrap();
+        let path = create_note(
+            sub.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        )
+        .unwrap();
+        assert!(Path::new(&path).starts_with(&sub));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ungranted_root_is_refused_even_when_dir_equals_root() {
+        let dir = unique_tmp("ungranted_root");
+        let root = dir.to_string_lossy().to_string();
+        let app = mock_app();
+        app.manage(GrantRegistry::default());
+        let result = super::create_note(root.clone(), root.clone(), app.state::<GrantRegistry>());
+        let err = result.expect_err("must be denied");
+        assert!(err.starts_with("path is outside the allowed workspaces and files:"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dry_run_is_denied_without_a_grant_and_otherwise_moves_nothing() {
+        let dir = unique_tmp("dry_run");
+        let root = dir.to_string_lossy().to_string();
+        let note = dir.join("note.md").to_string_lossy().to_string();
+        let sub = dir.join("sub").to_string_lossy().to_string();
+        fs::create_dir(&sub).unwrap();
+        fs::write(&note, "x").unwrap();
+
+        let ungranted = mock_app();
+        ungranted.manage(GrantRegistry::default());
+        ungranted.manage(VaultStore::default());
+        let (grants, store) = (
+            ungranted.state::<GrantRegistry>(),
+            ungranted.state::<VaultStore>(),
+        );
+        let renamed = block_on(super::rename_path(
+            note.clone(),
+            "y".into(),
+            root.clone(),
+            true,
+            grants.clone(),
+            store.clone(),
+        ));
+        let moved = block_on(super::move_path(
+            note.clone(),
+            sub.clone(),
+            root.clone(),
+            true,
+            grants,
+            store,
+        ));
+        for denied in [
+            renamed.map(|done| done.new_path),
+            moved.map(|done| done.new_path),
+        ] {
+            assert!(denied
+                .unwrap_err()
+                .starts_with("path is outside the allowed workspaces"));
+        }
+
+        let app = app_with_root(&root);
+        let (grants, store) = (app.state::<GrantRegistry>(), app.state::<VaultStore>());
+        let renamed = block_on(super::rename_path(
+            note.clone(),
+            "y".into(),
+            root.clone(),
+            true,
+            grants.clone(),
+            store.clone(),
+        ))
+        .unwrap();
+        let moved = block_on(super::move_path(note, sub, root, true, grants, store)).unwrap();
+        assert!(renamed.new_path.ends_with("y.md"));
+        assert_eq!(Path::new(&moved.new_path), dir.join("sub").join("note.md"));
+        assert!(dir.join("note.md").is_file());
+        assert!(!dir.join("y.md").exists());
+        assert!(!dir.join("sub").join("note.md").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_outside_root_is_refused() {
+        let root = unique_tmp("guard_root");
+        let outside = unique_tmp("guard_outside");
+        let result = create_note(
+            outside.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside the workspace"));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn unique_path_keeps_counting_past_existing_collisions() {
+        let dir = unique_tmp("unique_counter");
+        fs::write(dir.join("Untitled.md"), "x").unwrap();
+        fs::write(dir.join("Untitled 1.md"), "x").unwrap();
+
+        // Two collisions deep: the counter must advance monotonically.
+        let next = unique_path(&dir, "Untitled", Some("md"));
+        assert_eq!(next, dir.join("Untitled 2.md"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_into_own_subfolder_is_refused() {
+        let root = unique_tmp("move_into_self");
+        let folder = root.join("folder");
+        let child = folder.join("child");
+        fs::create_dir_all(&child).unwrap();
+
+        let app = app_with_root(&root.to_string_lossy());
+        let result = block_on(super::move_path(
+            folder.to_string_lossy().to_string(),
+            child.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+            false,
+            app.state::<GrantRegistry>(),
+            app.state::<VaultStore>(),
+        ));
+        // The guard must answer, not the OS rename failure.
+        assert_eq!(result.unwrap_err(), "Can't move an item into itself");
+        assert!(folder.is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_with_separators_or_dot_dot_stays_inside_root() {
+        let root = unique_tmp("rename_guard");
+        let canonical_root = root.canonicalize().unwrap();
+
+        // sanitize_name strips separators but keeps dots; whatever survives
+        // must land inside the workspace, never above it.
+        for (i, evil) in ["../escape", "..\\escape", ".."].iter().enumerate() {
+            let file = root.join(format!("victim{i}.md"));
+            fs::write(&file, "x").unwrap();
+            // Every sanitized name is a valid single component, so the rename
+            // must succeed; requiring it keeps the containment assert reachable.
+            let new_path = rename_path(
+                file.to_string_lossy().to_string(),
+                evil.to_string(),
+                root.to_string_lossy().to_string(),
+            )
+            .expect("sanitized rename should succeed");
+            let landed = Path::new(&new_path).canonicalize().unwrap();
+            assert!(
+                landed.starts_with(&canonical_root),
+                "rename to {evil:?} escaped the root: {new_path}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_preserves_extension_when_omitted() {
+        let dir = unique_tmp("rename_ext");
+        let root = dir.to_string_lossy().to_string();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        let renamed = rename_path(note, "My Note".to_string(), root.clone()).unwrap();
+        assert!(renamed.ends_with("My Note.md"));
+        assert!(Path::new(&renamed).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_dedupes_on_collision() {
+        let dir = unique_tmp("rename_dupe");
+        let root = dir.to_string_lossy().to_string();
+        fs::write(dir.join("Taken.md"), "x").unwrap();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        let renamed = rename_path(note, "Taken".to_string(), root.clone()).unwrap();
+        assert!(renamed.ends_with("Taken 1.md"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_strips_illegal_characters() {
+        let dir = unique_tmp("rename_illegal");
+        let root = dir.to_string_lossy().to_string();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        let renamed = rename_path(note, "a/b:c*?".to_string(), root.clone()).unwrap();
+        assert!(renamed.ends_with("abc.md"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_empty_name_errors() {
+        let dir = unique_tmp("rename_empty");
+        let root = dir.to_string_lossy().to_string();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        let result = rename_path(note, "   ".to_string(), root.clone());
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_keeps_typed_extension() {
+        let dir = unique_tmp("rename_typed_ext");
+        let root = dir.to_string_lossy().to_string();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        let renamed = rename_path(note, "readme.markdown".to_string(), root.clone()).unwrap();
+        assert!(renamed.ends_with("readme.markdown"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_folder_has_no_extension() {
+        let root = unique_tmp("rename_folder");
+        let root_s = root.to_string_lossy().to_string();
+        let folder = create_folder(root_s.clone(), root_s.clone()).unwrap();
+        let renamed = rename_path(folder, "Archive".to_string(), root_s.clone()).unwrap();
+        assert!(renamed.ends_with("Archive"));
+        assert!(Path::new(&renamed).is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_removes_a_file() {
+        let dir = unique_tmp("delete_file");
+        let root = dir.to_string_lossy().to_string();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        assert!(Path::new(&note).is_file());
+        delete_path(note.clone(), root.clone()).unwrap();
+        assert!(!Path::new(&note).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_removes_a_folder_recursively() {
+        let root = unique_tmp("delete_folder");
+        let root_s = root.to_string_lossy().to_string();
+        let folder = create_folder(root_s.clone(), root_s.clone()).unwrap();
+        fs::write(Path::new(&folder).join("inner.md"), "x").unwrap();
+        delete_path(folder.clone(), root_s.clone()).unwrap();
+        assert!(!Path::new(&folder).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn duplicate_file_appends_copy() {
+        let dir = unique_tmp("dupe_file");
+        let root = dir.to_string_lossy().to_string();
+        let note = create_note(root.clone(), root.clone()).unwrap();
+        let renamed = rename_path(note, "Note".to_string(), root.clone()).unwrap();
+        let copy = duplicate_path(renamed, root.clone()).unwrap();
+        assert!(copy.ends_with("Note copy.md"));
+        assert!(Path::new(&copy).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_dedupes_copies() {
+        let dir = unique_tmp("dupe_dupe");
+        let root = dir.to_string_lossy().to_string();
+        fs::write(dir.join("Note.md"), "body").unwrap();
+        let first = duplicate_path(
+            dir.join("Note.md").to_string_lossy().to_string(),
+            root.clone(),
+        )
+        .unwrap();
+        let second = duplicate_path(
+            dir.join("Note.md").to_string_lossy().to_string(),
+            root.clone(),
+        )
+        .unwrap();
+        assert!(first.ends_with("Note copy.md"));
+        assert!(second.ends_with("Note copy 1.md"));
+        assert_eq!(fs::read_to_string(&first).unwrap(), "body");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_folder_copies_recursively() {
+        let root = unique_tmp("dupe_folder");
+        let root_s = root.to_string_lossy().to_string();
+        let folder = create_folder(root_s.clone(), root_s.clone()).unwrap();
+        let folder = rename_path(folder, "Docs".to_string(), root_s.clone()).unwrap();
+        fs::write(Path::new(&folder).join("a.md"), "x").unwrap();
+        let copy = duplicate_path(folder, root_s.clone()).unwrap();
+        assert!(copy.ends_with("Docs copy"));
+        assert!(Path::new(&copy).join("a.md").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn duplicate_outside_root_is_refused() {
+        let root = unique_tmp("dupe_guard_root");
+        let outside = unique_tmp("dupe_guard_outside");
+        let victim = outside.join("v.md");
+        fs::write(&victim, "x").unwrap();
+        let result = duplicate_path(
+            victim.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn move_relocates_a_file_into_a_subfolder() {
+        let root = unique_tmp("move_file");
+        let root_s = root.to_string_lossy().to_string();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(root.join("note.md"), "body").unwrap();
+
+        let moved = move_path(
+            root.join("note.md").to_string_lossy().to_string(),
+            sub.to_string_lossy().to_string(),
+            root_s.clone(),
+        )
+        .unwrap();
+        assert_eq!(Path::new(&moved), sub.join("note.md"));
+        assert!(!root.join("note.md").exists());
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "body");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_dedupes_on_collision() {
+        let root = unique_tmp("move_dupe");
+        let root_s = root.to_string_lossy().to_string();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("note.md"), "existing").unwrap();
+        fs::write(root.join("note.md"), "moved").unwrap();
+
+        let moved = move_path(
+            root.join("note.md").to_string_lossy().to_string(),
+            sub.to_string_lossy().to_string(),
+            root_s.clone(),
+        )
+        .unwrap();
+        assert!(moved.ends_with("note 1.md"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_into_same_dir_is_a_noop() {
+        let root = unique_tmp("move_noop");
+        let root_s = root.to_string_lossy().to_string();
+        fs::write(root.join("note.md"), "x").unwrap();
+        let from = root.join("note.md").to_string_lossy().to_string();
+        let moved = move_path(from.clone(), root_s.clone(), root_s.clone()).unwrap();
+        assert_eq!(moved, from);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_folder_into_itself_is_refused() {
+        let root = unique_tmp("move_self");
+        let root_s = root.to_string_lossy().to_string();
+        let folder = root.join("Docs");
+        fs::create_dir(&folder).unwrap();
+        let result = move_path(
+            folder.to_string_lossy().to_string(),
+            folder.to_string_lossy().to_string(),
+            root_s.clone(),
+        );
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_outside_root_is_refused() {
+        let root = unique_tmp("move_guard_root");
+        let outside = unique_tmp("move_guard_outside");
+        fs::write(root.join("note.md"), "x").unwrap();
+        let result = move_path(
+            root.join("note.md").to_string_lossy().to_string(),
+            outside.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err());
+        assert!(root.join("note.md").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn rename_to_same_name_is_a_noop() {
+        let dir = unique_tmp("rename_noop");
+        let root = dir.to_string_lossy().to_string();
+        fs::write(dir.join("note.md"), "body").unwrap();
+        let path = dir.join("note.md").to_string_lossy().to_string();
+        // Typing the name without its extension resolves to the same file.
+        let renamed = rename_path(path.clone(), "note".to_string(), root.clone()).unwrap();
+        assert_eq!(renamed, path);
+        assert!(dir.join("note.md").is_file());
+        assert!(!dir.join("note 1.md").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_file_without_extension() {
+        let dir = unique_tmp("rename_noext");
+        let root = dir.to_string_lossy().to_string();
+        fs::write(dir.join("LICENSE"), "x").unwrap();
+        let renamed = rename_path(
+            dir.join("LICENSE").to_string_lossy().to_string(),
+            "COPYING".to_string(),
+            root.clone(),
+        )
+        .unwrap();
+        assert!(renamed.ends_with("COPYING"));
+        assert!(!renamed.ends_with(".md"));
+        assert!(Path::new(&renamed).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_folder_copies_nested_subdirs() {
+        let root = unique_tmp("dupe_nested");
+        let root_s = root.to_string_lossy().to_string();
+        let docs = root.join("Docs");
+        fs::create_dir(&docs).unwrap();
+        let nested = docs.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("deep.md"), "deep").unwrap();
+        let copy = duplicate_path(docs.to_string_lossy().to_string(), root_s.clone()).unwrap();
+        assert!(copy.ends_with("Docs copy"));
+        assert!(Path::new(&copy).join("nested").join("deep.md").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_relocates_a_folder_without_extension() {
+        let root = unique_tmp("move_folder");
+        let root_s = root.to_string_lossy().to_string();
+        let docs = root.join("Docs");
+        fs::create_dir(&docs).unwrap();
+        fs::write(docs.join("a.md"), "x").unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let moved = move_path(
+            docs.to_string_lossy().to_string(),
+            sub.to_string_lossy().to_string(),
+            root_s.clone(),
+        )
+        .unwrap();
+        assert_eq!(Path::new(&moved), sub.join("Docs"));
+        assert!(sub.join("Docs").join("a.md").is_file());
+        assert!(!docs.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_outside_root_is_refused() {
+        let root = unique_tmp("delete_guard_root");
+        let outside = unique_tmp("delete_guard_outside");
+        let victim = outside.join("victim.md");
+        fs::write(&victim, "x").unwrap();
+        let result = delete_path(
+            victim.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err());
+        assert!(victim.exists(), "guarded file must survive");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    // An async command's IPC marshalling is generated at its attribute line and
+    // only runs for a real IPC message, so rename and move go through one here.
+    #[test]
+    fn rename_and_move_answer_over_ipc() {
+        use serde_json::{json, Value};
+        use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        use tauri::WebviewWindowBuilder;
+
+        let dir = unique_tmp("ipc");
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::write(dir.join("note.md"), "x").unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let note = dir.join("note.md").to_string_lossy().to_string();
+        let sub = dir.join("sub").to_string_lossy().to_string();
+
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                super::rename_path,
+                super::move_path
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("mock app builds");
+        app.manage(GrantRegistry::default());
+        app.manage(VaultStore::default());
+        app.state::<GrantRegistry>().grant_workspace(&dir).unwrap();
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("webview builds");
+        let request = |cmd: &str, args: Value| {
+            #[cfg(any(windows, target_os = "android"))]
+            let url = "http://tauri.localhost";
+            #[cfg(not(any(windows, target_os = "android")))]
+            let url = "tauri://localhost";
+            InvokeRequest {
+                cmd: cmd.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: url.parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            }
+        };
+        let call = |cmd: &str, args: Value| -> Value {
+            get_ipc_response(&webview, request(cmd, args))
+                .expect("ipc call succeeds")
+                .deserialize()
+                .expect("response deserialises")
+        };
+        let refused =
+            |cmd: &str, args: Value| get_ipc_response(&webview, request(cmd, args)).is_err();
+
+        let preview = call(
+            "rename_path",
+            json!({ "path": note, "newName": "renamed", "root": root, "dryRun": true }),
+        );
+        assert!(preview["newPath"].as_str().unwrap().ends_with("renamed.md"));
+        assert!(dir.join("note.md").is_file());
+
+        // A missing argument and an ungranted root are refused over IPC as well.
+        let outside = unique_tmp("ipc_outside");
+        let outside_root = outside.to_string_lossy().to_string();
+        assert!(refused(
+            "rename_path",
+            json!({ "path": note, "newName": "x", "root": root })
+        ));
+        assert!(refused(
+            "move_path",
+            json!({ "from": note, "toDir": sub, "root": outside_root, "dryRun": true })
+        ));
+        let _ = fs::remove_dir_all(&outside);
+
+        let moved = call(
+            "move_path",
+            json!({ "from": note, "toDir": sub, "root": root, "dryRun": false }),
+        );
+        assert_eq!(
+            Path::new(moved["newPath"].as_str().unwrap()),
+            dir.join("sub").join("note.md")
+        );
+        assert!(dir.join("sub").join("note.md").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

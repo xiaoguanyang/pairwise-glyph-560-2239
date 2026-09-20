@@ -1,0 +1,232 @@
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+
+fn main() {
+    generate_extensions();
+    emit_identifier();
+    emit_sentry_dsn();
+    embed_comctl32_v6_in_test_binaries();
+    tauri_build::build();
+}
+
+/// The bundle identifier from `tauri.conf.json`, as `GLYPH_IDENTIFIER`, for
+/// code that finds the app's data directory without Tauri's path resolver
+/// (`glyph mcp`, which never builds the app).
+fn emit_identifier() {
+    let conf = read_json("tauri.conf.json");
+    let identifier = conf["identifier"]
+        .as_str()
+        .expect("tauri.conf.json must name an identifier");
+    println!("cargo:rustc-env=GLYPH_IDENTIFIER={identifier}");
+}
+
+/// Single source of truth for the Sentry DSN: `src-tauri/sentry.json` → `dsn`.
+///
+/// The frontend imports the same file (see `src/lib/telemetry.ts`) so both
+/// clients target the same project. Emitted as the `GLYPH_SENTRY_DSN` compile
+/// env so `telemetry.rs` can read it via `option_env!` with zero runtime cost.
+///
+/// Tolerant by design: a missing file or absent `dsn` yields an empty string,
+/// which disables reporting rather than failing the build (e.g. on forks).
+fn emit_sentry_dsn() {
+    println!("cargo:rerun-if-changed=sentry.json");
+
+    let dsn = fs::read_to_string("sentry.json")
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|value| {
+            value
+                .get("dsn")
+                .and_then(|d| d.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+
+    println!("cargo:rustc-env=GLYPH_SENTRY_DSN={dsn}");
+}
+
+/// Embed the ComCtl32 v6 (Common-Controls 6.0.0.0) manifest dependency when
+/// linking on Windows.
+///
+/// Tauri embeds this manifest into the shipped `glyph.exe` so the modern
+/// (WinSxS) ComCtl32 v6 is loaded. The cargo unit-test harness binary, however,
+/// gets no such manifest, so it binds to the legacy System32 ComCtl32 v5.82 —
+/// which lacks `TaskDialogIndirect`, a v6-only export that `rfd` (pulled in via
+/// `tauri-plugin-dialog`) statically imports. The result is a load-time
+/// `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) crash before any test runs.
+///
+/// `cargo:rustc-link-arg` is the only directive that reaches the lib unit-test
+/// harness (the `-tests` variant covers `[[test]]` integration targets only,
+/// which this crate has none of). It also applies to the shipped binary and the
+/// cdylib, but both already declare (or are agnostic to) the v6 dependency, so
+/// the duplicate is merged harmlessly by the linker.
+fn embed_comctl32_v6_in_test_binaries() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!(
+            "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' \
+             name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+             processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    }
+}
+
+/// Single source of truth for every supported file extension.
+///
+/// Types the OS knows about come from `tauri.conf.json` →
+/// `bundle.fileAssociations`, keyed by mime type rather than position so
+/// reordering the array cannot silently swap two lists. That array is also what
+/// the OS sees (Windows registry, macOS Info.plist, Linux `.desktop` file), so
+/// anything not in it can't reach the app via file association anyway.
+///
+/// Everything else (canvas, notebook, image, media) is not an OS file association and
+/// comes from `extensions.json` next to it. The frontend reads both files
+/// through `src/lib/extensionConfig.ts`, so the two sides cannot drift.
+///
+/// Generates `&'static [&'static str]` consts at build time so there is no
+/// runtime cost and no fallible serde call at first use.
+fn generate_extensions() {
+    let tauri_conf = read_json("tauri.conf.json");
+    let declared = read_json("extensions.json");
+
+    let lists = [
+        (
+            "MD_EXTENSIONS",
+            association_extensions(&tauri_conf, "text/markdown"),
+        ),
+        (
+            "D2_EXTENSIONS",
+            association_extensions(&tauri_conf, "text/plain"),
+        ),
+        (
+            "CANVAS_EXTENSIONS",
+            declared_extensions(&declared, "canvas"),
+        ),
+        (
+            "NOTEBOOK_EXTENSIONS",
+            declared_extensions(&declared, "notebook"),
+        ),
+        ("IMAGE_EXTENSIONS", declared_extensions(&declared, "image")),
+        ("MEDIA_EXTENSIONS", declared_extensions(&declared, "media")),
+    ];
+
+    // Every extension that names a file the user opened, for telemetry
+    // redaction. Deduplicated because nothing stops two categories from
+    // claiming the same extension.
+    let mut user_files: Vec<String> = Vec::new();
+    for (_, extensions) in &lists {
+        for ext in extensions {
+            if !user_files.contains(ext) {
+                user_files.push(ext.clone());
+            }
+        }
+    }
+
+    let mut generated = String::from(
+        "// Generated by build.rs from tauri.conf.json and extensions.json. Do not edit.\n",
+    );
+    for (name, extensions) in &lists {
+        generated.push_str(&render_const(name, extensions));
+    }
+    generated.push_str(&render_const("USER_FILE_EXTENSIONS", &user_files));
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
+    let dest = out_dir.join("extensions.rs");
+    fs::write(&dest, generated)
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", dest.display()));
+}
+
+/// Read and parse a build-time config file, re-running the build when it changes.
+fn read_json(name: &str) -> serde_json::Value {
+    let path = PathBuf::from(name);
+    let canonical = path
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("{name} not found at {} ({e})", path.display()));
+    println!("cargo:rerun-if-changed={}", canonical.display());
+
+    let json = fs::read_to_string(&canonical)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", canonical.display()));
+    serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid {name}: {e}"))
+}
+
+/// Extensions of the one `bundle.fileAssociations` entry carrying `mime_type`.
+fn association_extensions(config: &serde_json::Value, mime_type: &str) -> Vec<String> {
+    let associations = config
+        .get("bundle")
+        .and_then(|b| b.get("fileAssociations"))
+        .and_then(|fa| fa.as_array())
+        .unwrap_or_else(|| panic!("tauri.conf.json is missing bundle.fileAssociations"));
+
+    let matches: Vec<&serde_json::Value> = associations
+        .iter()
+        .filter(|a| a.get("mimeType").and_then(|m| m.as_str()) == Some(mime_type))
+        .collect();
+
+    let [only] = matches[..] else {
+        panic!(
+            "tauri.conf.json needs exactly one bundle.fileAssociations entry with mimeType {mime_type:?}, found {}; \
+             that entry is the single source of truth for these file extensions",
+            matches.len()
+        )
+    };
+
+    validate(
+        only.get("ext"),
+        &format!("tauri.conf.json fileAssociations[mimeType={mime_type:?}].ext"),
+    )
+}
+
+/// Extensions declared under `key` in `extensions.json`.
+fn declared_extensions(config: &serde_json::Value, key: &str) -> Vec<String> {
+    validate(config.get(key), &format!("extensions.json {key:?}"))
+}
+
+/// Require a non-empty array of plain ASCII extensions (no leading dot, no slashes).
+fn validate(value: Option<&serde_json::Value>, source: &str) -> Vec<String> {
+    let entries = value
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{source} is missing or not an array; it is the single source of truth for these file extensions"));
+
+    if entries.is_empty() {
+        panic!("{source} is empty; need at least one extension");
+    }
+
+    entries
+        .iter()
+        .map(|entry| {
+            let ext = entry
+                .as_str()
+                .unwrap_or_else(|| panic!("non-string entry in {source}"));
+            // Lowercase only: `has_extension` lowercases the path's extension
+            // before comparing, so an uppercase entry would silently match
+            // nothing. Mirrors VALID_EXTENSION in src/lib/extensionConfig.ts.
+            let valid = !ext.is_empty()
+                && ext
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+            if !valid {
+                panic!(
+                    "invalid extension {ext:?} in {source}; expected lowercase ASCII alphanumerics with no leading dot"
+                );
+            }
+            ext.to_string()
+        })
+        .collect()
+}
+
+fn render_const(name: &str, extensions: &[String]) -> String {
+    let entries: Vec<String> = extensions.iter().map(|e| format!("    {e:?}")).collect();
+    // Every per-category list has an ungated reader, so only the union needs the
+    // exemption: its sole caller is the `#[cfg(desktop)]` telemetry module, and a
+    // mobile build would otherwise trip `dead_code` under `-D warnings`. Scoping
+    // the attribute keeps a category that later loses its last reader warning.
+    let exemption = if name == "USER_FILE_EXTENSIONS" {
+        "#[cfg_attr(not(desktop), allow(dead_code))]\n"
+    } else {
+        ""
+    };
+    format!(
+        "{exemption}pub static {name}: &[&str] = &[\n{}\n];\n",
+        entries.join(",\n")
+    )
+}

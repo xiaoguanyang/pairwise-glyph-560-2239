@@ -1,0 +1,59 @@
+name: Security
+
+on:
+  # Push: only `main` so the weekly run is the source of truth for
+  # feature-branch security findings. Direct pushes to feature branches
+  # are still covered by their PR run.
+  push:
+    branches: [main]
+  # PR: any target branch (PRs to `feature/*` get the same scan as PRs
+  # to `main`).
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly on Monday at 6am UTC
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    # Only this job uploads SARIF; the audit jobs stay read-only.
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      matrix:
+        language: [javascript-typescript]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/autobuild@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+        working-directory: src-tauri
+
+  npm-audit:
+    name: npm Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - run: pnpm install --frozen-lockfile
+      # TODO: Revert to `pnpm audit --prod` when pnpm fixes bulk endpoint support
+      # Workaround: https://github.com/pnpm/pnpm/issues/11265
+      - run: pnpm audit --prod --ignore-registry-errors

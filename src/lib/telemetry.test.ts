@@ -1,0 +1,339 @@
+import type { Breadcrumb, ErrorEvent } from "@sentry/react";
+import * as Sentry from "@sentry/react";
+import { invoke } from "@tauri-apps/api/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  captureException,
+  disableTelemetry,
+  enableTelemetry,
+  redactPaths,
+  scrubBreadcrumb,
+  scrubEvent,
+} from "./telemetry";
+
+vi.mock("@sentry/react", () => ({
+  init: vi.fn(),
+  getClient: vi.fn(() => undefined),
+  captureException: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-os", () => ({
+  platform: () => "linux",
+  version: () => "6.1.0",
+  arch: () => "x86_64",
+}));
+
+const mockedInvoke = vi.mocked(invoke);
+const mockedInit = vi.mocked(Sentry.init);
+const mockedGetClient = vi.mocked(Sentry.getClient);
+const mockedCapture = vi.mocked(Sentry.captureException);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockedInvoke.mockResolvedValue(undefined);
+  mockedGetClient.mockReturnValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe("redactPaths", () => {
+  it("redacts Windows absolute paths up to the next delimiter", () => {
+    expect(redactPaths(String.raw`opened C:\Users\Jane\Secret\notes.md ok`)).toBe(
+      "opened [redacted-path]",
+    );
+    expect(redactPaths(String.raw`open "C:\Users\Jane\notes.md" failed`)).toBe(
+      'open "[redacted-path]" failed',
+    );
+    expect(redactPaths("open D:/Notes/secret.md failed")).toBe("open [redacted-path]");
+  });
+
+  it("keeps a path containing spaces or apostrophes whole instead of leaking its tail", () => {
+    expect(redactPaths(String.raw`open C:\Users\Jane Doe\My Notes.md: denied`)).toBe(
+      "open [redacted-path]: denied",
+    );
+    expect(redactPaths(String.raw`open C:\Users\Jane's Notes\diary.md: denied`)).toBe(
+      "open [redacted-path]: denied",
+    );
+    expect(redactPaths("read /Users/Jane Doe/Q's notes.md: denied")).toBe(
+      "read [redacted-path]: denied",
+    );
+  });
+
+  it("redacts Windows verbatim and UNC paths", () => {
+    expect(redactPaths(String.raw`at \\?\C:\Users\Jane\a.md`)).toBe("at [redacted-path]");
+    expect(redactPaths(String.raw`at \\?\UNC\nas\share\Jane\a.md`)).toBe("at [redacted-path]");
+    expect(redactPaths(String.raw`at \\nas\share\Jane Doe\a.md`)).toBe("at [redacted-path]");
+  });
+
+  it("redacts POSIX paths under user and volume roots", () => {
+    expect(redactPaths("read /Users/jane/Documents/diary.md failed")).toBe("read [redacted-path]");
+    expect(redactPaths("at /home/jane/notes/todo.md")).toBe("at [redacted-path]");
+    expect(redactPaths("at /Volumes/Work/notes.md")).toBe("at [redacted-path]");
+    expect(redactPaths("at /storage/emulated/0/Documents/notes.md")).toBe("at [redacted-path]");
+  });
+
+  it("redacts file:// URLs", () => {
+    expect(redactPaths("file:///Users/jane/x.md broke")).toBe("[redacted-path]");
+    expect(redactPaths('open "file:///Users/jane/x.md" broke')).toBe(
+      'open "[redacted-path]" broke',
+    );
+  });
+
+  it("redacts relative document paths", () => {
+    // The shape that reached Sentry verbatim: a workspace-relative link the
+    // opener refused.
+    expect(redactPaths("Not allowed to open url workflows/routing.md")).toBe(
+      "Not allowed to open url [redacted-path]",
+    );
+    expect(redactPaths("diary.md is a symlink")).toBe("[redacted-path] is a symlink");
+  });
+
+  it("redacts every document type, not just markdown", () => {
+    for (const name of [
+      "notes/diary.markdown",
+      "boards/plan.canvas",
+      "analysis.ipynb",
+      "diagrams/flow.d2",
+      "assets/holiday.PNG",
+    ]) {
+      expect(redactPaths(`failed to open ${name}`)).toBe("failed to open [redacted-path]");
+    }
+  });
+
+  it("consumes the whole extension rather than a shorter prefix of it", () => {
+    // Without the trailing word boundary, `md` would match first and leave "x".
+    expect(redactPaths("open notes.mdx")).toBe("open [redacted-path]");
+    expect(redactPaths("open notes.mdtext")).toBe("open [redacted-path]");
+  });
+
+  it("redacts remote URLs whole, including hosts that end in a document extension", () => {
+    // glyph.md is the project's own domain: without the URL pass the host would
+    // be mistaken for a file and leave a dangling "https:".
+    expect(redactPaths("GET https://glyph.md/download failed")).toBe("GET [redacted-url] failed");
+    expect(redactPaths("Failed to fetch https://glyph-md.github.io/assets/logo.svg")).toBe(
+      "Failed to fetch [redacted-url]",
+    );
+  });
+
+  it("stays linear on a long non-matching token", () => {
+    // An unbounded leading run rescans from every start position, which turned a
+    // single large console breadcrumb into a multi-second main-thread hang.
+    const huge = `data:image/png;base64,${"A".repeat(200_000)}`;
+    const started = performance.now();
+    redactPaths(huge);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("leaves source file names and bare extensions readable", () => {
+    expect(redactPaths("at src/main.rs:42")).toBe("at src/main.rs:42");
+    expect(redactPaths("at src/lib/telemetry.ts")).toBe("at src/lib/telemetry.ts");
+    expect(redactPaths("only the .md format is supported")).toBe(
+      "only the .md format is supported",
+    );
+  });
+
+  it("leaves path-free text untouched", () => {
+    expect(redactPaths("Cannot read property of undefined")).toBe(
+      "Cannot read property of undefined",
+    );
+  });
+});
+
+describe("scrubBreadcrumb", () => {
+  it("drops navigation / fetch / xhr breadcrumbs", () => {
+    expect(scrubBreadcrumb({ category: "navigation" })).toBeNull();
+    expect(scrubBreadcrumb({ category: "fetch" })).toBeNull();
+    expect(scrubBreadcrumb({ category: "xhr" })).toBeNull();
+  });
+
+  it("redacts paths in the message and url data", () => {
+    const result = scrubBreadcrumb({
+      category: "ui.click",
+      message: "opened /Users/jane/a.md",
+      data: { url: "https://example.com/secret" },
+    });
+    expect(result).not.toBeNull();
+    expect(result?.message).toBe("opened [redacted-path]");
+    expect(result?.data?.url).toBe("[redacted-url]");
+  });
+
+  it("redacts a relative document name in the message", () => {
+    const result = scrubBreadcrumb({
+      category: "ui.click",
+      message: "opened workflows/routing.md",
+    });
+    expect(result?.message).toBe("opened [redacted-path]");
+  });
+
+  it("keeps a plain breadcrumb as-is", () => {
+    const crumb: Breadcrumb = { category: "ui.click", message: "clicked button" };
+    expect(scrubBreadcrumb(crumb)).toEqual(crumb);
+  });
+
+  it("keeps a breadcrumb that has no message", () => {
+    const crumb: Breadcrumb = { category: "ui.click" };
+    expect(scrubBreadcrumb(crumb)).toEqual({ category: "ui.click" });
+  });
+
+  it("leaves non-string url data untouched", () => {
+    const crumb: Breadcrumb = { category: "ui.click", data: { count: 3 } };
+    expect(scrubBreadcrumb(crumb)?.data).toEqual({ count: 3 });
+  });
+});
+
+describe("scrubEvent", () => {
+  it("strips request, user, and server_name", () => {
+    const event = {
+      request: { url: "https://x" },
+      user: { ip_address: "1.2.3.4" },
+      server_name: "janes-macbook",
+    } as unknown as ErrorEvent;
+
+    const scrubbed = scrubEvent(event);
+    expect(scrubbed.request).toBeUndefined();
+    expect(scrubbed.user).toBeUndefined();
+    expect(scrubbed.server_name).toBeUndefined();
+  });
+
+  it("redacts the message and exception values", () => {
+    const event = {
+      message: "failed at /Users/jane/a.md",
+      exception: { values: [{ value: String.raw`ENOENT C:\Users\Jane\b.md` }] },
+    } as unknown as ErrorEvent;
+
+    const scrubbed = scrubEvent(event);
+    expect(scrubbed.message).toBe("failed at [redacted-path]");
+    expect(scrubbed.exception?.values?.[0].value).toBe("ENOENT [redacted-path]");
+  });
+
+  it("handles exceptions that have no value", () => {
+    const event = {
+      exception: { values: [{ type: "Error" }] },
+    } as unknown as ErrorEvent;
+
+    const scrubbed = scrubEvent(event);
+    expect(scrubbed.exception?.values?.[0].value).toBeUndefined();
+  });
+
+  it("keeps only allowlisted contexts", () => {
+    const event = {
+      contexts: {
+        os: { name: "macOS" },
+        app: { app_version: "1.0" },
+        evil: { secret: "leak" },
+      },
+    } as unknown as ErrorEvent;
+
+    const scrubbed = scrubEvent(event);
+    expect(scrubbed.contexts?.os).toBeDefined();
+    expect(scrubbed.contexts?.app).toBeDefined();
+    expect(scrubbed.contexts?.evil).toBeUndefined();
+  });
+
+  it("filters URL-bearing breadcrumbs and redacts the rest", () => {
+    const event = {
+      breadcrumbs: [
+        { category: "navigation", message: "/Users/jane" },
+        { category: "ui.click", message: "open /Users/jane/a.md" },
+      ],
+    } as unknown as ErrorEvent;
+
+    const scrubbed = scrubEvent(event);
+    expect(scrubbed.breadcrumbs).toHaveLength(1);
+    expect(scrubbed.breadcrumbs?.[0].message).toBe("open [redacted-path]");
+  });
+});
+
+describe("captureException", () => {
+  it("is a no-op before the telemetry opt-in has loaded the SDK", async () => {
+    // A fresh module instance guarantees the lazy SDK slot is still empty.
+    vi.resetModules();
+    const fresh = await import("./telemetry");
+    expect(() => fresh.captureException(new Error("boom"))).not.toThrow();
+    expect(mockedCapture).not.toHaveBeenCalled();
+  });
+
+  it("delegates to the SDK once the opt-in has loaded it", async () => {
+    vi.stubEnv("PROD", true);
+    await enableTelemetry();
+    const error = new Error("boom");
+    captureException(error);
+    expect(mockedCapture).toHaveBeenCalledWith(error, undefined);
+  });
+});
+
+describe("enableTelemetry", () => {
+  it("mirrors state to the backend but does not init Sentry in dev", async () => {
+    vi.stubEnv("PROD", false);
+    await enableTelemetry();
+    expect(mockedInvoke).toHaveBeenCalledWith("set_error_reporting", { enabled: true });
+    expect(mockedInit).not.toHaveBeenCalled();
+  });
+
+  it("initializes Sentry in production when no client exists", async () => {
+    vi.stubEnv("PROD", true);
+    await enableTelemetry();
+    expect(mockedInit).toHaveBeenCalledTimes(1);
+    const options = mockedInit.mock.calls[0][0];
+    expect(options).toMatchObject({ sendDefaultPii: false, tracesSampleRate: 0 });
+    expect(options?.beforeSend).toBe(scrubEvent);
+    expect(options?.beforeBreadcrumb).toBe(scrubBreadcrumb);
+  });
+
+  it("tags the platform, since the scrubber drops the request that carries it", async () => {
+    vi.stubEnv("PROD", true);
+    await enableTelemetry();
+    const scope = mockedInit.mock.calls[0][0]?.initialScope as {
+      tags: { platform: string; arch: string };
+      contexts: { os: { name: string; version: string } };
+    };
+    expect(scope.tags).toEqual({ platform: "linux", arch: "x86_64" });
+    expect(scope.contexts.os).toEqual({ name: "linux", version: "6.1.0" });
+  });
+
+  it("does not re-init when a client already exists", async () => {
+    vi.stubEnv("PROD", true);
+    mockedGetClient.mockReturnValue({} as ReturnType<typeof Sentry.getClient>);
+    await enableTelemetry();
+    expect(mockedInit).not.toHaveBeenCalled();
+  });
+
+  it("does not init when the user opts out while the SDK is still loading", async () => {
+    vi.stubEnv("PROD", true);
+    const pending = enableTelemetry();
+    disableTelemetry();
+    await pending;
+    expect(mockedInit).not.toHaveBeenCalled();
+  });
+
+  it("re-initializes when re-enabled after an opt-out closed the client", async () => {
+    vi.stubEnv("PROD", true);
+    await enableTelemetry();
+    const close = vi.fn();
+    mockedGetClient.mockReturnValue({ close } as unknown as ReturnType<typeof Sentry.getClient>);
+    disableTelemetry();
+    mockedInit.mockClear();
+
+    await enableTelemetry();
+    expect(mockedInit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("disableTelemetry", () => {
+  it("mirrors state to the backend and closes an existing client", async () => {
+    vi.stubEnv("PROD", true);
+    await enableTelemetry();
+    const close = vi.fn();
+    mockedGetClient.mockReturnValue({ close } as unknown as ReturnType<typeof Sentry.getClient>);
+    disableTelemetry();
+    expect(mockedInvoke).toHaveBeenCalledWith("set_error_reporting", { enabled: false });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op on the client when none is bound", () => {
+    mockedGetClient.mockReturnValue(undefined);
+    expect(() => disableTelemetry()).not.toThrow();
+  });
+});

@@ -1,0 +1,91 @@
+name: Feature Request
+description: Suggest a new feature or improvement (doubles as the implementable spec)
+labels: ["enhancement"]
+assignees: ["hamidfzm"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! Describe what you'd like to see. The more of this you fill in, the closer it is to a ready-to-build spec, but only Problem, Proposed Solution, and Acceptance Criteria are required. Maintainers (and the `/plan` command) flesh out the rest.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this feature solve? Is it related to a frustration?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Observable, testable outcomes that define "done". One per line as a checklist.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / Out of scope
+      description: What this issue does and does not cover, to keep it focused.
+      placeholder: |
+        In scope: ...
+        Out of scope: ...
+
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Implementation Tasks
+      description: Coarse task breakdown as a checklist. Leave blank if unsure; `/plan` will fill it in.
+      value: |
+        - [ ]
+
+  - type: dropdown
+    id: areas
+    attributes:
+      label: Affected areas
+      description: Which parts of Glyph does this touch?
+      multiple: true
+      options:
+        - Markdown rendering
+        - Layout / app-shell
+        - Modals (settings, AI panel)
+        - Rust backend
+        - Settings
+        - Build / CI
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or features you've considered.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      description: Which platform(s) is this relevant to?
+      multiple: true
+      options:
+        - All
+        - macOS
+        - Windows
+        - Linux
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, mockups, or screenshots.

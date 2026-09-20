@@ -1,0 +1,274 @@
+// Source text of the sandbox worker. It runs with no DOM and no Tauri invoke;
+// everything reaches the host through the protocol messages, and network
+// access is fenced to the plugin's declared `network:<host>` permissions by
+// replacing the worker's own fetch. Every other way to reach the network or a
+// fresh, unfenced scope (XHR, WebSocket, EventSource, WebTransport, nested
+// workers, importScripts) is removed outright. In production builds the page
+// CSP also blocks remote dynamic import inside the worker, so the fetch fence
+// is not the only wall.
+//
+// Kept as a template string rather than a bundled file so the loader can spawn
+// it from a blob URL without any build-time coordination.
+
+export function buildWorkerBootstrap(): string {
+  return `
+"use strict";
+// Tests shim globalThis and run this source via new Function, where dynamic
+// import is unavailable; they inject an importer instead. In a real worker
+// the fallback import() is used.
+const importModule = globalThis.__glyphSandboxImport || ((u) => import(u));
+let callSeq = 0;
+const pendingHost = new Map(); // callId -> {resolve, reject}
+const commands = new Map();    // id -> run
+const exporters = new Map();   // id -> build
+const dictionaries = new Map(); // language -> load
+let settings = {};
+
+// A ctx method the sandbox cannot implement. Named explicitly so the plugin
+// author sees which API is unavailable and why, instead of a TypeError.
+function sandboxUnavailable(name) {
+  return () => {
+    throw new Error(
+      \`ctx.\${name} is not available to sandboxed plugins: it needs DOM access. \` +
+        \`Set "sandbox": false in the plugin manifest to use it.\`,
+    );
+  };
+}
+
+function hostCall(message) {
+  return new Promise((resolve, reject) => {
+    const callId = ++callSeq;
+    pendingHost.set(callId, { resolve, reject });
+    postMessage({ ...message, callId });
+  });
+}
+
+// Network fence: exact declared host or a subdomain of it.
+function isNetworkAllowed(permissions, url) {
+  let host;
+  try { host = new URL(url).hostname; } catch { return false; }
+  return permissions.some((p) => {
+    if (!p.startsWith("network:")) return false;
+    const allowed = p.slice("network:".length);
+    return host === allowed || host.endsWith("." + allowed);
+  });
+}
+
+// Pin a global to \`value\`, non-writable and non-configurable, so plugin code
+// can neither delete the pin nor swap the original back in. Workers expose
+// these as own properties of the global; the prototype walk covers an engine
+// that puts them on WorkerGlobalScope.prototype instead. A pin that does not
+// take throws, which fails activation rather than leaving a hole.
+function lockGlobal(name, value) {
+  for (let obj = globalThis; obj; obj = Object.getPrototypeOf(obj)) {
+    if (obj === globalThis || Object.prototype.hasOwnProperty.call(obj, name)) {
+      Object.defineProperty(obj, name, { value, writable: false, configurable: false });
+    }
+  }
+  if (globalThis[name] !== value) throw new Error("could not fence " + name);
+}
+
+// The brand-checked \`url\` getter of the real Request, looked up along the
+// prototype chain (a wrapped Request class keeps it on its parent).
+function requestUrlGetter(RealRequest) {
+  for (let proto = RealRequest.prototype; proto; proto = Object.getPrototypeOf(proto)) {
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "url");
+    if (descriptor && descriptor.get) return descriptor.get;
+  }
+  throw new Error("could not fence fetch: Request.url getter not found");
+}
+
+function installNetworkFence(permissions) {
+  const realFetch = globalThis.fetch.bind(globalThis);
+  // Captured before any plugin code runs. The host is read off a normalized
+  // Request through the brand-checked getter: fetch stringifies a non-Request
+  // input, so an object whose \`url\` and \`toString\` disagree would otherwise
+  // pass the check with one host and be sent to another.
+  const RealRequest = Request;
+  const requestUrl = requestUrlGetter(RealRequest);
+  lockGlobal("fetch", (input, init) => {
+    let request;
+    try {
+      request = new RealRequest(input, init);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    const url = requestUrl.call(request);
+    if (!isNetworkAllowed(permissions, url)) {
+      return Promise.reject(
+        new Error("network access to " + url + " is not covered by this plugin's permissions"),
+      );
+    }
+    return realFetch(request);
+  });
+  // A nested worker would start with an unfenced fetch of its own; the rest
+  // reach the network without going through fetch at all (Cache.add fetches).
+  for (const name of [
+    "XMLHttpRequest",
+    "WebSocket",
+    "EventSource",
+    "WebTransport",
+    "Worker",
+    "SharedWorker",
+    "importScripts",
+    "caches",
+  ]) {
+    lockGlobal(name, undefined);
+  }
+}
+
+function buildContext(init) {
+  settings = init.settings;
+  return {
+    apiVersion: init.apiVersion,
+    commands: {
+      register(command) {
+        commands.set(command.id, command.run);
+        postMessage({ type: "register-command", id: command.id, title: command.title });
+        return () => commands.delete(command.id);
+      },
+    },
+    ui: {
+      addStyles(css) {
+        postMessage({ type: "add-styles", css });
+        return () => {};
+      },
+      // The other three UiRegistryApi methods hand the plugin a live DOM
+      // element to mount into, which a worker does not have and cannot be
+      // given. So they are refused by name rather than left undefined, where
+      // they surfaced as a bare "is not a function" with nothing pointing at
+      // the sandbox. A plugin that needs them declares "sandbox": false.
+      addStatusBarItem: sandboxUnavailable("ui.addStatusBarItem"),
+      addSidebarPanel: sandboxUnavailable("ui.addSidebarPanel"),
+      addSettingsPanel: sandboxUnavailable("ui.addSettingsPanel"),
+    },
+    exporters: {
+      register(exporter) {
+        exporters.set(exporter.id, exporter.build);
+        postMessage({
+          type: "register-exporter",
+          id: exporter.id,
+          label: exporter.label,
+          extension: exporter.extension,
+        });
+        return () => exporters.delete(exporter.id);
+      },
+      registerSiteTheme(theme) {
+        // Pure data: the host owns the registry; worker teardown removes it
+        // via the plugin's DisposerBag like every other contribution.
+        postMessage({ type: "register-site-theme", id: theme.id, label: theme.label, css: theme.css });
+        return () => {};
+      },
+    },
+    workspace: {
+      readFile(path) {
+        return hostCall({ type: "workspace-read", path });
+      },
+      listFiles() {
+        return hostCall({ type: "workspace-list" });
+      },
+    },
+    assets: {
+      async readBinary(path) {
+        return new Uint8Array(await hostCall({ type: "asset-read", path }));
+      },
+      async readText(path) {
+        const bytes = await hostCall({ type: "asset-read", path });
+        return new TextDecoder().decode(new Uint8Array(bytes));
+      },
+    },
+    spellcheck: {
+      // Only the picker metadata crosses now; load() stays in the worker and
+      // runs on demand, so a dictionary the user never selects is never read.
+      registerDictionary(dictionary) {
+        dictionaries.set(dictionary.language, dictionary.load);
+        postMessage({
+          type: "register-dictionary",
+          language: dictionary.language,
+          label: dictionary.label,
+          scripts: dictionary.scripts ? Array.from(dictionary.scripts) : undefined,
+        });
+        return () => dictionaries.delete(dictionary.language);
+      },
+    },
+    settings: {
+      get(key) {
+        return settings[key];
+      },
+      set(key, value) {
+        settings[key] = value;
+        postMessage({ type: "settings-set", key, value });
+      },
+    },
+    notify(message) {
+      postMessage({ type: "notify", message: String(message) });
+    },
+    registerTranslations(locale, namespace, resources) {
+      postMessage({ type: "register-translations", locale, namespace, resources });
+    },
+  };
+}
+
+onmessage = async (event) => {
+  const msg = event.data;
+  try {
+    if (msg.type === "init") {
+      installNetworkFence(msg.permissions);
+      const url = "data:text/javascript;base64," +
+        btoa(String.fromCharCode(...new TextEncoder().encode(msg.source)));
+      const module = await importModule(url);
+      const plugin = module && module.default;
+      if (!plugin || typeof plugin.activate !== "function") {
+        throw new Error("plugin entry must default-export an object with an activate() function");
+      }
+      await plugin.activate(buildContext(msg));
+      postMessage({ type: "activated" });
+    } else if (msg.type === "run-command") {
+      const run = commands.get(msg.id);
+      if (run) await run();
+    } else if (msg.type === "build-export") {
+      const build = exporters.get(msg.id);
+      try {
+        const output = await build(msg.bodyHtml);
+        postMessage({
+          type: "export-result",
+          callId: msg.callId,
+          ok: true,
+          output: typeof output === "string" ? output : Array.from(output),
+        });
+      } catch (err) {
+        postMessage({ type: "export-result", callId: msg.callId, ok: false, error: String(err) });
+      }
+    } else if (msg.type === "load-dictionary") {
+      const load = dictionaries.get(msg.language);
+      try {
+        if (!load) throw new Error("no dictionary registered for " + msg.language);
+        const sources = await load();
+        postMessage({
+          type: "dictionary-result",
+          callId: msg.callId,
+          ok: true,
+          sources: { aff: String(sources.aff), dic: String(sources.dic) },
+        });
+      } catch (err) {
+        postMessage({
+          type: "dictionary-result",
+          callId: msg.callId,
+          ok: false,
+          error: String(err),
+        });
+      }
+    } else if (msg.type === "host-result") {
+      const pending = pendingHost.get(msg.callId);
+      if (pending) {
+        pendingHost.delete(msg.callId);
+        if (msg.ok) pending.resolve(msg.value);
+        else pending.reject(new Error(msg.error));
+      }
+    }
+  } catch (err) {
+    postMessage({ type: "error", message: String(err) });
+  }
+};
+`;
+}

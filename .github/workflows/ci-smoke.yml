@@ -1,0 +1,40 @@
+name: Smoke
+
+on:
+  workflow_call:
+
+# CI-time smoke tests: fast checks that drive real engines or binaries, as
+# opposed to unit tests. The built-app tauri-driver smoke (#502) instead rides
+# the Build workflow's ubuntu-22.04 leg (.github/actions/app-smoke), reusing
+# the release binary already built there rather than building a second one.
+# Post-release channel smoke tests live in release-smoke-test.yml instead.
+jobs:
+  webkit:
+    # Renders a real D2 diagram and probes every CSP-dependent render surface
+    # in Playwright WebKit under the CSP shipped in tauri.conf.json. WebKit
+    # enforces the page CSP inside blob workers (Chromium does not), so only
+    # a WebKit run catches a CSP that breaks rendering on Linux/macOS.
+    name: WebKit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/pnpm-setup
+      - run: pnpm install --frozen-lockfile
+      - name: Install Playwright WebKit
+        run: pnpm exec playwright install --with-deps webkit
+      - run: pnpm test:e2e
+
+  release-bump:
+    # Runs the release scripts against throwaway repos: the version bump
+    # (format validation, tag-exists check, and package.json / Cargo.toml /
+    # Cargo.lock agreement) and the changelog resolution (previous tag from the
+    # tag's own ancestry, commit fallback when generate-notes finds no pull
+    # requests). Guards create-release.yml and release.yml without cutting a
+    # release (see #504).
+    name: Release bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/rust-setup
+      - run: bash scripts/bump-version.test.sh
+      - run: bash scripts/release-changelog.test.sh

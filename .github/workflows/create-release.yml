@@ -1,0 +1,60 @@
+name: Create Release
+run-name: Create Release v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.4.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # main's ruleset only lets deploy keys push; humans and PATs go through PRs.
+      - name: Set up release deploy key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.RELEASE_DEPLOY_KEY }}" > ~/.ssh/release_key
+          chmod 600 ~/.ssh/release_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git remote set-url --push origin "git@github.com:${{ github.repository }}.git"
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/release_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/rust-setup
+
+      # Validation and the three-file bump live in the script so the
+      # release-bump CI job can exercise them without cutting a release.
+      - name: Bump version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash scripts/bump-version.sh "$VERSION"
+
+      # Pushes back to the dispatched ref, not a hardcoded main, so a hotfix
+      # release can be cut from a branch off a previous tag. Dispatch from a
+      # branch, never a tag ref.
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          if git diff --cached --quiet; then
+            echo "Version already at ${{ inputs.version }}, skipping commit"
+          else
+            git commit -m "chore: bump version to ${{ inputs.version }}"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
+
+      - name: Create and push tag
+        run: |
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"

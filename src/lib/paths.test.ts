@@ -1,0 +1,171 @@
+import { describe, expect, it } from "vitest";
+import {
+  basename,
+  displayName,
+  isPathInside,
+  lastSegment,
+  movedPath,
+  parentDir,
+  pathStem,
+  pruneInside,
+  relativeToRoot,
+  stem,
+} from "./paths";
+
+describe("basename", () => {
+  it("returns the final segment of a posix path", () => {
+    expect(basename("/a/b/c.md")).toBe("c.md");
+  });
+
+  it("returns the final segment of a windows path", () => {
+    expect(basename("a\\b\\c.md")).toBe("c.md");
+  });
+
+  it("returns the input unchanged when there is no directory", () => {
+    expect(basename("c.md")).toBe("c.md");
+  });
+});
+
+describe("lastSegment", () => {
+  it("returns the final segment", () => {
+    expect(lastSegment("/a/b/c.md")).toBe("c.md");
+  });
+
+  it("ignores a trailing separator", () => {
+    expect(lastSegment("/home/me/vault/")).toBe("vault");
+  });
+
+  it("returns the input when there is no segment", () => {
+    expect(lastSegment("/")).toBe("/");
+  });
+});
+
+describe("stem", () => {
+  it("drops the extension", () => {
+    expect(stem("note.md")).toBe("note");
+  });
+
+  it("drops only the last extension", () => {
+    expect(stem("archive.tar.gz")).toBe("archive.tar");
+  });
+
+  it("returns a name without an extension unchanged", () => {
+    expect(stem("Folder")).toBe("Folder");
+  });
+
+  it("keeps a dotfile whole, since its leading dot is not an extension", () => {
+    expect(stem(".gitignore")).toBe(".gitignore");
+  });
+
+  it("drops a real extension from a dotfile", () => {
+    expect(stem(".env.local")).toBe(".env");
+  });
+});
+
+describe("pathStem", () => {
+  it("drops the extension from the file name", () => {
+    expect(pathStem("/ws/notes/Cooking.md")).toBe("Cooking");
+  });
+
+  it("keeps a dotfile whole, since the leading dot is part of the name", () => {
+    expect(pathStem("/ws/.gitignore")).toBe(".gitignore");
+  });
+});
+
+describe("displayName", () => {
+  it("returns the file name of a plain path", () => {
+    expect(displayName("/a/b/Note.md")).toBe("Note.md");
+  });
+
+  it("decodes percent-encoding in an iOS file URI", () => {
+    expect(displayName("file:///On%20My%20iPhone/Picked%20Note.md")).toBe("Picked Note.md");
+  });
+
+  it("strips the encoded folder prefix of an Android SAF URI", () => {
+    const uri =
+      "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fnote.md";
+    expect(displayName(uri)).toBe("note.md");
+  });
+
+  it("keeps the raw segment when decoding fails", () => {
+    expect(displayName("/a/bad%2segment.md")).toBe("bad%2segment.md");
+  });
+});
+
+describe("parentDir", () => {
+  it("returns the directory of a nested posix path", () => {
+    expect(parentDir("/a/b/c.md", "/root")).toBe("/a/b");
+  });
+
+  it("returns the directory of a nested windows path", () => {
+    expect(parentDir("a\\b\\c.md", "/root")).toBe("a\\b");
+  });
+
+  it("falls back for a bare name with no separator", () => {
+    expect(parentDir("c.md", "/root")).toBe("/root");
+  });
+
+  it("falls back when the only separator is at index 0", () => {
+    expect(parentDir("/c.md", "/root")).toBe("/root");
+  });
+});
+
+describe("isPathInside", () => {
+  it("matches the base itself", () => {
+    expect(isPathInside("/a/b", "/a/b")).toBe(true);
+  });
+
+  it("matches a posix descendant", () => {
+    expect(isPathInside("/a/b/c.md", "/a/b")).toBe(true);
+  });
+
+  it("matches a windows descendant", () => {
+    expect(isPathInside("a\\b\\c.md", "a\\b")).toBe(true);
+  });
+
+  it("rejects an unrelated path", () => {
+    expect(isPathInside("/x/y", "/a/b")).toBe(false);
+  });
+
+  it("rejects a sibling that only shares a name prefix", () => {
+    expect(isPathInside("/a/bc", "/a/b")).toBe(false);
+  });
+});
+
+describe("movedPath", () => {
+  it("re-roots the moved entry and everything inside it", () => {
+    expect(movedPath("/ws/a.md", "/ws/a.md", "/ws/b.md")).toBe("/ws/b.md");
+    expect(movedPath("C:\\ws\\sub\\n.md", "C:\\ws\\sub", "C:\\ws\\dest\\sub")).toBe(
+      "C:\\ws\\dest\\sub\\n.md",
+    );
+  });
+
+  it("leaves a path that only shares the moved entry's prefix", () => {
+    expect(movedPath("/ws/sub 1/n.md", "/ws/sub", "/ws/dest/sub")).toBe("/ws/sub 1/n.md");
+  });
+});
+
+describe("pruneInside", () => {
+  it("removes the base and its descendants, keeping unrelated keys", () => {
+    const removed: string[] = [];
+    pruneInside(["/a/b", "/a/b/c.md", "/a/x"], "/a/b", (k) => removed.push(k));
+    expect(removed).toEqual(["/a/b", "/a/b/c.md"]);
+  });
+
+  it("removes nothing when no key is inside the base", () => {
+    const removed: string[] = [];
+    pruneInside(["/x", "/y/z"], "/a/b", (k) => removed.push(k));
+    expect(removed).toEqual([]);
+  });
+});
+
+describe("relativeToRoot", () => {
+  it("strips the root prefix on both separators", () => {
+    expect(relativeToRoot("/ws/Notes/Plan.md", "/ws")).toBe("Notes/Plan.md");
+    expect(relativeToRoot("C:\\ws\\Plan.md", "C:\\ws")).toBe("Plan.md");
+  });
+
+  it("falls back to the file name outside the root", () => {
+    expect(relativeToRoot("/elsewhere/Plan.md", "/ws")).toBe("Plan.md");
+  });
+});

@@ -1,0 +1,307 @@
+{
+  "app": {
+    "name": "Glyph"
+  },
+  "error": {
+    "fallback": "مشکلی پیش آمد. فایل را دوباره باز کنید یا Glyph را دوباره اجرا کنید."
+  },
+  "emptyState": {
+    "openHeading": "یک فایل Markdown باز کنید",
+    "openHint": "فایلی را اینجا رها کنید، از منو استفاده کنید یا <kbd>{{shortcut}}</kbd> را فشار دهید",
+    "folderHeading": "هیچ فایلی در این پوشه باز نیست",
+    "folderHint": "برای شروع خواندن، فایلی را از نوار کناری انتخاب کنید.",
+    "newNote": "یادداشت جدید",
+    "newCanvas": "بوم جدید",
+    "openFile": "باز کردن فایل",
+    "newDocument": "سند جدید",
+    "openFolder": "باز کردن پوشه",
+    "newWorkspace": "فضای کاری جدید"
+  },
+  "statusBar": {
+    "words_one": "{{formatted}} واژه",
+    "words_other": "{{formatted}} واژه",
+    "readingTime_one": "{{count}} دقیقه مطالعه",
+    "readingTime_other": "{{count}} دقیقه مطالعه"
+  },
+  "sidebar": {
+    "hideFiles": "پنهان کردن نوار فایل‌ها",
+    "hideOutline": "پنهان کردن نوار رئوس مطالب",
+    "showFiles": "نمایش نوار فایل‌ها",
+    "showOutline": "نمایش نوار رئوس مطالب",
+    "closeDrawer": "بستن",
+    "newNote": "یادداشت جدید",
+    "newFolder": "پوشه جدید",
+    "collapseAll": "جمع کردن همه",
+    "expandAll": "باز کردن همه",
+    "closeWorkspace": "بستن فضای کاری",
+    "outline": "رئوس مطالب",
+    "resize": "تغییر اندازه نوار کناری",
+    "resizeBacklinks": "تغییر اندازه پیوندهای ورودی",
+    "resizeTags": "تغییر اندازه برچسب‌ها",
+    "indexIncomplete": "نمایه ناقص"
+  },
+  "backlinks": {
+    "heading": "پیوندهای ورودی",
+    "empty": "پیوندی وجود ندارد"
+  },
+  "tags": {
+    "heading": "برچسب‌ها",
+    "filterBy": "فیلتر بر پایهٔ #{{tag}}",
+    "filtered": "#{{tag}} ({{total}})",
+    "clearFilter": "پاک کردن فیلتر برچسب",
+    "sortByCount": "مرتب‌سازی برچسب‌ها بر پایهٔ شمار",
+    "empty": "برچسبی وجود ندارد"
+  },
+  "tabBar": {
+    "graphLabel": "گراف: {{name}}",
+    "untitled": "بدون عنوان",
+    "closeTab": "بستن {{label}}",
+    "viewMode": "حالت نمایش",
+    "view": "نمایش",
+    "editMode": "حالت ویرایش",
+    "edit": "ویرایش",
+    "splitMode": "حالت تقسیم",
+    "split": "تقسیم",
+    "aiChat": "گفتگو با هوش مصنوعی",
+    "commandPalette": "پالت فرمان",
+    "openGraph": "باز کردن گراف",
+    "contextMenu": {
+      "close": "بستن",
+      "closeOthers": "بستن بقیه",
+      "closeToRight": "بستن زبانه‌های بعدی",
+      "closeToLeft": "بستن زبانه‌های قبلی",
+      "closeAll": "بستن همه"
+    }
+  },
+  "updateBanner": {
+    "available": "<strong>Glyph {{version}}</strong> در دسترس است",
+    "currentVersion": "(نسخه فعلی شما {{version}})",
+    "download": "دانلود",
+    "dismiss": "بستن اعلان به‌روزرسانی"
+  },
+  "workspaceBanner": {
+    "dismiss": "بستن اعلان فضای کاری"
+  },
+  "search": {
+    "placeholder": "جستجو در سند…",
+    "label": "جستجو",
+    "noResults": "نتیجه‌ای یافت نشد",
+    "matchCount": "{{current}} از {{total}}",
+    "prevMatch": "مورد قبلی",
+    "nextMatch": "مورد بعدی",
+    "close": "بستن جستجو"
+  },
+  "workspaceSearch": {
+    "title": "جستجو در فضای کاری",
+    "placeholder": "جستجو در همه یادداشت‌ها...",
+    "queryLabel": "عبارت جستجوی فضای کاری",
+    "prompt": "برای جستجو در همه یادداشت‌های این فضای کاری تایپ کنید.",
+    "searching": "در حال جستجو...",
+    "noResults": "نتیجه‌ای یافت نشد",
+    "noWorkspace": "برای جستجو میان یادداشت‌ها یک پوشه باز کنید.",
+    "invalidPattern": "این عبارت باقاعده معتبر نیست.",
+    "failed": "جستجو ناموفق بود.",
+    "locateFailed": "پرونده باز شد، اما پیمایش به این مورد ممکن نبود.",
+    "truncated": "تنها نخستین نتایج نمایش داده می‌شود. برای دیدن بقیه، جستجو را محدودتر کنید.",
+    "caseSensitive": "تطبیق بزرگی و کوچکی حروف",
+    "wholeWord": "تطبیق واژه کامل",
+    "regex": "استفاده از عبارت باقاعده"
+  },
+  "exportProgress": {
+    "html": "HTML",
+    "docx": "سند Word",
+    "epub": "EPUB",
+    "pdf": "PDF",
+    "exporting": "در حال خروجی‌گرفتن {{format}}…",
+    "website": "وب‌سایت",
+    "exportingPages": "در حال خروجی‌گرفتن صفحه {{done}} از {{total}}…"
+  },
+  "contextMenu": {
+    "copy": "کپی",
+    "copyLinkAddress": "کپی نشانی پیوند",
+    "openInBrowser": "باز کردن در مرورگر خارجی",
+    "selectAll": "انتخاب همه",
+    "searchGoogle": "جستجوی «{{query}}» در گوگل",
+    "stopReading": "توقف خواندن",
+    "readSelection": "خواندن بخش انتخابی با صدای بلند",
+    "readAloud": "خواندن با صدای بلند",
+    "ai": "هوش مصنوعی",
+    "aiOnSelection": "{{action}} بخش انتخابی",
+    "aiOnDocument": "{{action}} سند",
+    "aiVerb": {
+      "summarize": "خلاصه‌سازی",
+      "explain": "توضیح",
+      "translate": "ترجمه",
+      "simplify": "ساده‌سازی"
+    }
+  },
+  "fileTree": {
+    "open": "باز کردن",
+    "openInNewWindow": "باز کردن در پنجره جدید",
+    "newNote": "یادداشت جدید",
+    "newCanvas": "بوم جدید",
+    "newFolder": "پوشه جدید",
+    "rename": "تغییر نام",
+    "duplicate": "ساختن یک کپی",
+    "move": "انتقال به…",
+    "copyPath": "کپی مسیر",
+    "copyAbsolutePath": "کپی مسیر مطلق",
+    "reveal": "نمایش در پوشه",
+    "delete": "حذف"
+  },
+  "canvasMenu": {
+    "newCard": "کارت جدید",
+    "newGroup": "گروه جدید",
+    "newLink": "پیوند جدید",
+    "editText": "ویرایش متن",
+    "editGroupLabel": "ویرایش برچسب",
+    "editUrl": "ویرایش نشانی",
+    "editEdgeLabel": "ویرایش برچسب",
+    "deleteConnection": "حذف اتصال",
+    "clearColor": "پاک کردن رنگ",
+    "color": "رنگ",
+    "delete": "حذف",
+    "colorRed": "قرمز",
+    "colorOrange": "نارنجی",
+    "colorYellow": "زرد",
+    "colorGreen": "سبز",
+    "colorCyan": "فیروزه‌ای",
+    "colorPurple": "بنفش"
+  },
+  "link": {
+    "confirmMessage": "این پیوند در مرورگر شما باز شود؟\n\n{{url}}",
+    "openExternalTitle": "باز کردن پیوند خارجی",
+    "open": "باز کردن",
+    "cancel": "انصراف"
+  },
+  "copyButton": {
+    "copied": "کپی شد",
+    "label": "کپی کد"
+  },
+  "lightbox": {
+    "image": "تصویر: {{alt}}",
+    "viewer": "نمایشگر تصویر",
+    "close": "بستن (Esc)",
+    "previous": "تصویر قبلی (←)",
+    "next": "تصویر بعدی (→)",
+    "zoomOut": "کوچک‌نمایی (-)",
+    "zoomIn": "بزرگ‌نمایی (+)",
+    "fit": "جا دادن در صفحه (0)",
+    "actualSize": "اندازه واقعی (1)"
+  },
+  "mdxNotice": {
+    "body": "فایل MDX: کامپوننت‌های JSX رندر نمی‌شوند؛ فقط محتوای مارک‌داون نمایش داده می‌شود."
+  },
+  "mermaid": {
+    "empty": "منبع نمودار خالی است",
+    "errorLabel": "خطای نمودار",
+    "errorTitle": "رندر نمودار ناموفق بود",
+    "label": "نمودار Mermaid",
+    "zoomHint": "برای بزرگ‌نمایی کلیک کنید"
+  },
+  "d2": {
+    "empty": "منبع نمودار خالی است",
+    "errorLabel": "خطای نمودار",
+    "errorTitle": "رندر نمودار ناموفق بود",
+    "label": "نمودار D2",
+    "zoomHint": "برای بزرگ‌نمایی کلیک کنید"
+  },
+  "taskList": {
+    "toggle": "تغییر وضعیت کار"
+  },
+  "frontmatter": {
+    "title": "عنوان",
+    "author": "نویسنده",
+    "date": "تاریخ",
+    "tags": "برچسب‌ها"
+  },
+  "notebook": {
+    "errorTitle": "رندر این نوت‌بوک ممکن نبود",
+    "empty": "این نوت‌بوک هیچ سلولی ندارد.",
+    "sourceBanner": "نمای منبع فقط‌خواندنی؛ نوت‌بوک‌ها در Glyph قابل ویرایش نیستند.",
+    "unsupportedInteractive": "خروجی تعاملی ({{type}}) هنوز پشتیبانی نمی‌شود",
+    "unsupported": "خروجی پشتیبانی‌نشده"
+  },
+  "canvasToolbar": {
+    "addCard": "افزودن کارت",
+    "addCardLabel": "+ کارت",
+    "addGroup": "افزودن گروه",
+    "addGroupLabel": "+ گروه",
+    "addLink": "افزودن پیوند",
+    "addLinkLabel": "+ پیوند",
+    "zoomOut": "کوچک‌نمایی",
+    "zoomIn": "بزرگ‌نمایی",
+    "fit": "جا دادن محتوا در صفحه",
+    "fitLabel": "جا دادن"
+  },
+  "canvasSelection": {
+    "toolbar": "انتخاب",
+    "clearColor": "پاک کردن رنگ",
+    "colorLabel": "رنگ {{color}}",
+    "customColor": "رنگ سفارشی",
+    "delete": "حذف",
+    "deleteCount": "حذف ({{count}})"
+  },
+  "canvasEdge": {
+    "labelPlaceholder": "برچسب",
+    "labelAria": "برچسب یال"
+  },
+  "canvasNode": {
+    "groupPlaceholder": "نام گروه",
+    "linkPlaceholder": "https://example.com",
+    "textPlaceholder": "Markdown بنویسید…"
+  },
+  "canvasViewer": {
+    "error": "این بوم باز نشد."
+  },
+  "graph": {
+    "label": "گراف فضای کاری",
+    "reset": "بازگرداندن گراف به مرکز و اندازه مناسب",
+    "resetView": "بازنشانی نما",
+    "emptyState": "هنوز یادداشتی برای نمایش در گراف نیست. فایل‌های markdown را به این فضای کاری اضافه کنید."
+  },
+  "fileDialog": {
+    "documents": "اسناد",
+    "markdown": "Markdown",
+    "notebook": "نوت‌بوک Jupyter",
+    "d2": "نمودار D2",
+    "newWorkspace": "فضای کاری بدون عنوان"
+  },
+  "exportFilter": {
+    "html": "HTML",
+    "docx": "سند Word",
+    "epub": "EPUB",
+    "pdf": "PDF"
+  },
+  "headingAnchor": {
+    "label": "کپی پیوند عنوان"
+  },
+  "embed": {
+    "openSource": "باز کردن یادداشت جاسازی‌شده",
+    "loading": "در حال بارگذاری محتوای جاسازی‌شده…",
+    "broken": "یادداشت جاسازی‌شده پیدا نشد: {{target}}",
+    "circular": "ارجاع حلقه‌ای: {{target}}",
+    "headingNotFound": "عنوان پیدا نشد: {{heading}}",
+    "error": "بارگذاری محتوای جاسازی‌شده ممکن نشد: {{target}}"
+  },
+  "wikilinkPreview": {
+    "loading": "در حال بارگذاری پیش‌نمایش…",
+    "notFound": "یادداشت پیدا نشد: {{target}}",
+    "createNote": "ایجاد یادداشت",
+    "headingNotFound": "سرفصل پیدا نشد: {{heading}}",
+    "error": "پیش‌نمایش بارگذاری نشد: {{target}}"
+  },
+  "defaultAppBanner": {
+    "message": "Glyph برنامه پیش‌فرض Markdown شما شود؟",
+    "setDefault": "تنظیم به‌عنوان پیش‌فرض",
+    "notNow": "اکنون نه",
+    "never": "هرگز",
+    "dismiss": "بستن پیام برنامه پیش‌فرض"
+  },
+  "errorReportingBanner": {
+    "message": "با ارسال گزارش‌های خرابی ناشناس به بهبود Glyph کمک می‌کنید؟",
+    "enable": "فعال‌سازی",
+    "noThanks": "نه، ممنون",
+    "dismiss": "بستن پیام گزارش خرابی"
+  }
+}

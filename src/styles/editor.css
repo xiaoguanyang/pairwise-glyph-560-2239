@@ -1,0 +1,392 @@
+.editor-container {
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.editor-container .cm-editor {
+  height: 100%;
+}
+
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-inline-start: auto;
+  padding: 0 4px;
+  /* Keep the toggle in the bar even if the tab list grows wide enough to
+   * fight for horizontal space (e.g. after a TOC scroll triggers a layout
+   * pass that re-measures the flex children). */
+  flex-shrink: 0;
+}
+
+.mode-toggle-btn {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: var(--glyph-radius-sm);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.mode-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.mode-toggle-btn:hover {
+  background: var(--color-surface-tertiary);
+  color: var(--color-text-primary);
+}
+
+.mode-toggle-btn[data-active] {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+/* Syntax highlighting tokens — uses CSS variables for theme-aware colors */
+.cm-heading {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.cm-heading-1 { font-size: 1.4em; }
+.cm-heading-2 { font-size: 1.2em; }
+.cm-heading-3 { font-size: 1.1em; }
+
+.cm-strong { font-weight: 700; color: var(--color-text-primary); }
+.cm-emphasis { font-style: italic; }
+.cm-strikethrough { text-decoration: line-through; color: var(--color-text-tertiary); }
+
+.cm-link { color: var(--color-accent); text-decoration: underline; }
+.cm-url { color: var(--color-accent); opacity: 0.7; }
+
+.cm-code {
+  color: var(--color-text-secondary);
+}
+
+.cm-quote {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.cm-meta { color: var(--color-text-tertiary); }
+.cm-keyword { color: #c678dd; }
+.cm-string { color: #98c379; }
+.cm-number { color: #d19a66; }
+
+.dark .cm-keyword { color: #c792ea; }
+.dark .cm-string { color: #a5d6a7; }
+.dark .cm-number { color: #f5c06f; }
+
+.tab-dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex-shrink: 0;
+}
+
+/* CodeMirror autocomplete popup — themed to match Glyph surfaces.
+ * Selectors mirror @codemirror/autocomplete's emitted DOM exactly. */
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  box-shadow: var(--glyph-shadow);
+  font-family: var(--glyph-font, system-ui, -apple-system, sans-serif);
+  overflow: hidden;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete > ul {
+  max-height: 240px;
+  font-size: 0.875em;
+  color: var(--color-text-primary);
+}
+
+.cm-tooltip.cm-tooltip-autocomplete > ul > li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionLabel {
+  color: inherit;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionMatchedText {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionDetail {
+  color: var(--color-text-tertiary);
+  font-style: normal;
+  font-size: 0.85em;
+  margin-inline-start: auto;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail {
+  color: color-mix(in srgb, #ffffff 75%, transparent);
+}
+
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon {
+  display: none;
+}
+
+/* Spell check: red wavy underline under misspelled words. */
+.cm-misspelled {
+  text-decoration: underline wavy var(--color-error);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
+
+/* Right-click suggestion menu (imperative DOM, mirrors Glyph surfaces). */
+.spellcheck-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  box-shadow: var(--glyph-shadow);
+  font-family: var(--glyph-font, system-ui, -apple-system, sans-serif);
+  font-size: 0.875em;
+}
+
+.spellcheck-menu-item {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  text-align: start;
+  border: none;
+  background: none;
+  border-radius: var(--glyph-radius-sm);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.spellcheck-menu-item:hover {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.spellcheck-menu-action {
+  color: var(--color-text-secondary);
+}
+
+.spellcheck-menu-empty {
+  padding: 4px 10px;
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.spellcheck-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--color-border);
+}
+
+/* Floating toolbar above a non-empty editor selection. */
+.cm-format-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  box-shadow: var(--glyph-shadow);
+  font-family: var(--glyph-font, system-ui, -apple-system, sans-serif);
+}
+
+
+.cm-format-toolbar-button {
+  min-width: 28px;
+  padding: 3px 6px;
+  border: none;
+  background: none;
+  border-radius: var(--glyph-radius-sm);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.cm-format-toolbar-button:hover {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.cm-format-toolbar-button[data-action="bold"] { font-weight: 700; }
+.cm-format-toolbar-button[data-action="italic"] { font-style: italic; }
+.cm-format-toolbar-button[data-action="strikethrough"] { text-decoration: line-through; }
+.cm-format-toolbar-button[data-action="code"] { font-family: var(--glyph-code-font, monospace); }
+
+/* Themed right-click menu inside the editor, replacing the native WebView one. */
+.cm-editor-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 170px;
+  padding: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius);
+  box-shadow: var(--glyph-shadow);
+  font-family: var(--glyph-font, system-ui, -apple-system, sans-serif);
+  font-size: 0.875em;
+}
+
+.cm-editor-menu-item {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  text-align: start;
+  border: none;
+  background: none;
+  border-radius: var(--glyph-radius-sm);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cm-editor-menu-item:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.cm-editor-menu-item:disabled {
+  color: var(--color-text-tertiary);
+  cursor: default;
+}
+
+.cm-editor-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--color-border);
+}
+
+/* CodeMirror's find/replace panel, dressed to match the preview's .search-bar.
+   It docks across the top of the editor rather than floating, because the
+   replace row makes it too tall to overlay the text comfortably. */
+.cm-panels.cm-panels-top {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.cm-panel.cm-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding-block: 6px;
+  /* Room on the end for the absolutely positioned close button. */
+  padding-inline: 8px 32px;
+  font-size: 13px;
+  /* The editor theme sets a monospace face on `&`; the panel is chrome. */
+  font-family: var(--glyph-font, system-ui, -apple-system, sans-serif);
+}
+
+.cm-panel.cm-search br {
+  flex-basis: 100%;
+  height: 0;
+}
+
+.cm-panel.cm-search input,
+.cm-panel.cm-search button,
+.cm-panel.cm-search label {
+  margin: 0;
+}
+
+.cm-panel.cm-search .cm-textfield {
+  background: var(--color-surface-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius-sm);
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--color-text-primary);
+  width: 200px;
+  outline: none;
+}
+
+.cm-panel.cm-search .cm-textfield:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+.cm-panel.cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* The base theme sets `pre`, which lets a translated multi-word label
+     overflow the panel instead of wrapping with it. */
+  white-space: normal;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.cm-panel.cm-search button:not([name="close"]) {
+  appearance: none;
+  background: var(--color-surface-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--glyph-radius-sm);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.cm-panel.cm-search button:not([name="close"]):hover {
+  background: var(--color-surface-tertiary);
+}
+
+.cm-panel.cm-search [name="close"] {
+  /* The base theme pins this with `right`, which lands on the wrong side in
+     RTL. Re-anchor it on the logical edge. */
+  right: auto;
+  inset-inline-end: 6px;
+  top: 6px;
+  padding: 0 4px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.cm-panel.cm-search [name="close"]:hover {
+  color: var(--color-text-primary);
+}
+
+/* Match the preview's highlight colours so find looks the same in both panes. */
+.cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+.cm-editor .cm-searchMatch.cm-searchMatch-selected {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
